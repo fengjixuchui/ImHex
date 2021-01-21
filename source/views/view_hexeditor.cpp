@@ -1,6 +1,7 @@
 #include "views/view_hexeditor.hpp"
 
 #include <hex/providers/provider.hpp>
+#include <hex/api/imhex_api.hpp>
 #include "providers/file_provider.hpp"
 
 #include <GLFW/glfw3.h>
@@ -15,8 +16,8 @@
 
 namespace hex {
 
-    ViewHexEditor::ViewHexEditor(std::vector<lang::PatternData*> &patternData, const std::list<Bookmark> &bookmarks)
-            : View("Hex Editor"), m_patternData(patternData), m_bookmarks(bookmarks) {
+    ViewHexEditor::ViewHexEditor(std::vector<lang::PatternData*> &patternData)
+            : View("Hex Editor"), m_patternData(patternData) {
 
         this->m_memoryEditor.ReadFn = [](const ImU8 *data, size_t off) -> ImU8 {
             auto provider = SharedData::currentProvider;
@@ -44,24 +45,28 @@ namespace hex {
 
             std::optional<u32> currColor, prevColor;
 
-            for (const auto &[region, name, comment, color] : _this->m_bookmarks) {
+            for (const auto &[region, name, comment, color] : ImHexApi::Bookmarks::getEntries()) {
                 if (off >= region.address && off < (region.address + region.size))
-                    currColor = (color & 0x00FFFFFF) | 0x40000000;
+                    currColor = (color & 0x00FFFFFF) | 0x80000000;
                 if ((off - 1) >= region.address && (off - 1) < (region.address + region.size))
-                    prevColor = (color & 0x00FFFFFF) | 0x40000000;;
+                    prevColor = (color & 0x00FFFFFF) | 0x80000000;
             }
 
-            if (_this->m_highlightedBytes.contains(off))
-                currColor = _this->m_highlightedBytes[off];
-            if (_this->m_highlightedBytes.contains(off - 1))
-                prevColor = _this->m_highlightedBytes[off - 1];
+            if (_this->m_highlightedBytes.contains(off)) {
+                auto color = (_this->m_highlightedBytes[off] & 0x00FFFFFF) | 0x80000000;
+                currColor = currColor.has_value() ? ImAlphaBlendColors(color, currColor.value()) : color;
+            }
+            if (_this->m_highlightedBytes.contains(off - 1)) {
+                auto color = (_this->m_highlightedBytes[off - 1] & 0x00FFFFFF) | 0x80000000;
+                prevColor = prevColor.has_value() ? ImAlphaBlendColors(color, prevColor.value()) : color;
+            }
 
             if (next && prevColor != currColor) {
                 return false;
             }
 
-            if (currColor.has_value()) {
-                _this->m_memoryEditor.HighlightColor = currColor.value();
+            if (currColor.has_value() && (currColor.value() & 0x00FFFFFF) != 0x00) {
+                _this->m_memoryEditor.HighlightColor = (currColor.value() & 0x00FFFFFF) | 0x40000000;
                 return true;
             }
 
@@ -70,11 +75,9 @@ namespace hex {
         };
 
         this->m_memoryEditor.HoverFn = [](const ImU8 *data, size_t addr) {
-            ViewHexEditor *_this = (ViewHexEditor *) data;
-
             bool tooltipShown = false;
 
-            for (const auto &[region, name, comment, color] : _this->m_bookmarks) {
+            for (const auto &[region, name, comment, color] : ImHexApi::Bookmarks::getEntries()) {
                 if (addr >= region.address && addr < (region.address + region.size)) {
                     if (!tooltipShown) {
                         ImGui::BeginTooltip();
@@ -90,15 +93,15 @@ namespace hex {
                 ImGui::EndTooltip();
         };
 
-        View::subscribeEvent(Events::FileDropped, [this](const void *userData) {
-            auto filePath = static_cast<const char*>(userData);
+        View::subscribeEvent(Events::FileDropped, [this](auto userData) {
+            auto filePath = std::any_cast<const char*>(userData);
 
             if (filePath != nullptr)
                 this->openFile(filePath);
         });
 
-        View::subscribeEvent(Events::SelectionChangeRequest, [this](const void *userData) {
-            const Region &region = *reinterpret_cast<const Region*>(userData);
+        View::subscribeEvent(Events::SelectionChangeRequest, [this](auto userData) {
+            const Region &region = std::any_cast<Region>(userData);
 
             auto provider = SharedData::currentProvider;
             auto page = provider->getPageOfAddress(region.address);
@@ -109,15 +112,15 @@ namespace hex {
             this->m_memoryEditor.GotoAddr = region.address;
             this->m_memoryEditor.DataPreviewAddr = region.address;
             this->m_memoryEditor.DataPreviewAddrEnd = region.address + region.size - 1;
-            View::postEvent(Events::RegionSelected, &region);
+            View::postEvent(Events::RegionSelected, region);
         });
 
-        View::subscribeEvent(Events::ProjectFileLoad, [this](const void *userData) {
+        View::subscribeEvent(Events::ProjectFileLoad, [this](auto) {
             this->openFile(ProjectFile::getFilePath());
         });
 
-        View::subscribeEvent(Events::WindowClosing, [this](const void *userData) {
-            auto window = const_cast<GLFWwindow*>(static_cast<const GLFWwindow*>(userData));
+        View::subscribeEvent(Events::WindowClosing, [this](auto userData) {
+            auto window = std::any_cast<GLFWwindow*>(userData);
 
             if (ProjectFile::hasUnsavedChanges()) {
                 glfwSetWindowShouldClose(window, GLFW_FALSE);
@@ -126,7 +129,7 @@ namespace hex {
             }
         });
 
-        View::subscribeEvent(Events::PatternChanged, [this](const void *userData) {
+        View::subscribeEvent(Events::PatternChanged, [this](auto) {
            this->m_highlightedBytes.clear();
 
            for (const auto &pattern : this->m_patternData)
@@ -166,7 +169,7 @@ namespace hex {
                     provider->setCurrentPage(provider->getCurrentPage() - 1);
 
                     Region dataPreview = { std::min(this->m_memoryEditor.DataPreviewAddr, this->m_memoryEditor.DataPreviewAddrEnd), 1 };
-                    View::postEvent(Events::RegionSelected, &dataPreview);
+                    View::postEvent(Events::RegionSelected, dataPreview);
                 }
 
                 ImGui::SameLine();
@@ -175,7 +178,7 @@ namespace hex {
                     provider->setCurrentPage(provider->getCurrentPage() + 1);
 
                     Region dataPreview = { std::min(this->m_memoryEditor.DataPreviewAddr, this->m_memoryEditor.DataPreviewAddrEnd), 1 };
-                    View::postEvent(Events::RegionSelected, &dataPreview);
+                    View::postEvent(Events::RegionSelected, dataPreview);
                 }
             }
             ImGui::End();
@@ -1037,14 +1040,13 @@ R"(
         if (ImGui::MenuItem("Create bookmark", nullptr, false, this->m_memoryEditor.DataPreviewAddr != -1 && this->m_memoryEditor.DataPreviewAddrEnd != -1)) {
             size_t start = std::min(this->m_memoryEditor.DataPreviewAddr, this->m_memoryEditor.DataPreviewAddrEnd);
             size_t end = std::max(this->m_memoryEditor.DataPreviewAddr, this->m_memoryEditor.DataPreviewAddrEnd);
-            Bookmark bookmark = { start, end - start + 1, { }, { } };
 
-            View::postEvent(Events::AddBookmark, &bookmark);
+            ImHexApi::Bookmarks::add(start, end - start + 1, { }, { });
         }
 
         auto provider = SharedData::currentProvider;
         if (ImGui::MenuItem("Set base address", nullptr, false, provider != nullptr && provider->isReadable())) {
-            std::memset(this->m_baseAddressBuffer, sizeof(this->m_baseAddressBuffer), 0x00);
+            std::memset(this->m_baseAddressBuffer, 0x00, sizeof(this->m_baseAddressBuffer));
             View::doLater([]{ ImGui::OpenPopup("Set base address"); });
         }
     }

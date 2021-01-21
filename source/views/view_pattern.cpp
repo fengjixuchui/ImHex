@@ -80,23 +80,23 @@ namespace hex {
         this->m_textEditor.SetLanguageDefinition(PatternLanguage());
         this->m_textEditor.SetShowWhitespaces(false);
 
-        View::subscribeEvent(Events::ProjectFileStore, [this](const void*) {
+        View::subscribeEvent(Events::ProjectFileStore, [this](auto) {
             ProjectFile::setPattern(this->m_textEditor.GetText());
         });
 
-        View::subscribeEvent(Events::ProjectFileLoad, [this](const void*) {
+        View::subscribeEvent(Events::ProjectFileLoad, [this](auto) {
             this->m_textEditor.SetText(ProjectFile::getPattern());
             this->parsePattern(this->m_textEditor.GetText().data());
         });
 
-        View::subscribeEvent(Events::AppendPatternLanguageCode, [this](const void *userData) {
-             const char *code = static_cast<const char*>(userData);
+        View::subscribeEvent(Events::AppendPatternLanguageCode, [this](auto userData) {
+             auto code = std::any_cast<const char*>(userData);
 
              this->m_textEditor.InsertText("\n");
              this->m_textEditor.InsertText(code);
         });
 
-        View::subscribeEvent(Events::FileLoaded, [this](const void* userData) {
+        View::subscribeEvent(Events::FileLoaded, [this](auto) {
             if (this->m_textEditor.GetText().find_first_not_of(" \f\n\r\t\v") != std::string::npos)
                 return;
 
@@ -185,7 +185,7 @@ namespace hex {
                 return false;
             });
 
-            View::subscribeEvent(Events::SettingsChanged, [this](const void*) {
+            View::subscribeEvent(Events::SettingsChanged, [this](auto) {
                 int theme = ContentRegistry::Settings::getSettingsData()[SettingsCategoryInterface][SettingColorTheme];
 
                 switch (theme) {
@@ -237,16 +237,16 @@ namespace hex {
                 if (ImGui::BeginChild("##console", consoleSize, true, ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
                     for (auto &[level, message] : this->m_console) {
                         switch (level) {
-                            case lang::Evaluator::ConsoleLogLevel::Debug:
+                            case lang::LogConsole::Level::Debug:
                                 ImGui::PushStyleColor(ImGuiCol_Text, this->m_textEditor.GetPalette()[u32(TextEditor::PaletteIndex::Comment)]);
                                 break;
-                            case lang::Evaluator::ConsoleLogLevel::Info:
+                            case lang::LogConsole::Level::Info:
                                 ImGui::PushStyleColor(ImGuiCol_Text, this->m_textEditor.GetPalette()[u32(TextEditor::PaletteIndex::Default)]);
                                 break;
-                            case lang::Evaluator::ConsoleLogLevel::Warning:
+                            case lang::LogConsole::Level::Warning:
                                 ImGui::PushStyleColor(ImGuiCol_Text, this->m_textEditor.GetPalette()[u32(TextEditor::PaletteIndex::Preprocessor)]);
                                 break;
-                            case lang::Evaluator::ConsoleLogLevel::Error:
+                            case lang::LogConsole::Level::Error:
                                 ImGui::PushStyleColor(ImGuiCol_Text, this->m_textEditor.GetPalette()[u32(TextEditor::PaletteIndex::ErrorMarker)]);
                                 break;
                             default: continue;
@@ -383,12 +383,12 @@ namespace hex {
         hex::lang::Evaluator evaluator(provider, defaultDataEndianess);
 
         auto patternData = evaluator.evaluate(ast.value());
-        this->m_console = evaluator.getConsoleLog();
+        this->m_console = evaluator.getConsole().getLog();
         if (!patternData.has_value())
             return;
 
         this->m_patternData = patternData.value();
-        this->postEvent(Events::PatternChanged);
+        View::postEvent(Events::PatternChanged);
     }
 
 }

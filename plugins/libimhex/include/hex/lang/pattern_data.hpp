@@ -152,7 +152,7 @@ namespace hex::lang {
             ImGui::TableNextColumn();
             if (ImGui::Selectable(("##PatternDataLine"s + std::to_string(this->getOffset())).c_str(), false, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap)) {
                 Region selectRegion = { this->getOffset(), this->getSize() };
-                View::postEvent(Events::SelectionChangeRequest, &selectRegion);
+                View::postEvent(Events::SelectionChangeRequest, selectRegion);
             }
             ImGui::SameLine();
             ImGui::Text("%s", this->getVariableName().c_str());
@@ -183,7 +183,7 @@ namespace hex::lang {
 
     class PatternDataPadding : public PatternData {
     public:
-        PatternDataPadding(u64 offset, size_t size) : PatternData(offset, size, 0x00FFFFFF) { }
+        PatternDataPadding(u64 offset, size_t size) : PatternData(offset, size, 0xFF000000) { }
 
         PatternData* clone() override {
             return new PatternDataPadding(*this);
@@ -703,7 +703,7 @@ namespace hex::lang {
             ImGui::TableNextColumn();
             if (ImGui::Selectable(("##PatternDataLine"s + std::to_string(this->getOffset())).c_str(), false, ImGuiSelectableFlags_SpanAllColumns)) {
                 Region selectRegion = { this->getOffset(), this->getSize() };
-                View::postEvent(Events::SelectionChangeRequest, &selectRegion);
+                View::postEvent(Events::SelectionChangeRequest, selectRegion);
             }
             ImGui::SameLine();
             ImGui::Text("%s", this->getVariableName().c_str());

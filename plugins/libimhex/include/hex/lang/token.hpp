@@ -42,6 +42,7 @@ namespace hex::lang {
             Minus,
             Star,
             Slash,
+            Percent,
             ShiftLeft,
             ShiftRight,
             BitOr,
@@ -58,7 +59,8 @@ namespace hex::lang {
             BoolOr,
             BoolXor,
             BoolNot,
-            TernaryConditional
+            TernaryConditional,
+            Dollar
         };
 
         enum class ValueType {
@@ -206,6 +208,7 @@ namespace hex::lang {
 #define OPERATOR_MINUS                      COMPONENT(Operator, Minus)
 #define OPERATOR_STAR                       COMPONENT(Operator, Star)
 #define OPERATOR_SLASH                      COMPONENT(Operator, Slash)
+#define OPERATOR_PERCENT                    COMPONENT(Operator, Percent)
 #define OPERATOR_SHIFTLEFT                  COMPONENT(Operator, ShiftLeft)
 #define OPERATOR_SHIFTRIGHT                 COMPONENT(Operator, ShiftRight)
 #define OPERATOR_BITOR                      COMPONENT(Operator, BitOr)
@@ -223,6 +226,7 @@ namespace hex::lang {
 #define OPERATOR_BOOLXOR                    COMPONENT(Operator, BoolXor)
 #define OPERATOR_BOOLNOT                    COMPONENT(Operator, BoolNot)
 #define OPERATOR_TERNARYCONDITIONAL         COMPONENT(Operator, TernaryConditional)
+#define OPERATOR_DOLLAR                     COMPONENT(Operator, Dollar)
 
 #define VALUETYPE_CUSTOMTYPE                COMPONENT(ValueType, CustomType)
 #define VALUETYPE_PADDING                   COMPONENT(ValueType, Padding)

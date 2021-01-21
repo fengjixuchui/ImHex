@@ -16,14 +16,14 @@ namespace hex {
 
     class View;
     namespace lang { class ASTNode; }
+    namespace lang { class LogConsole; }
 
     /*
         The Content Registry is the heart of all features in ImHex that are in some way extendable by Plugins.
         It allows you to add/register new content that will be picked up and used by the ImHex core or by other
         plugins when needed.
     */
-    class ContentRegistry {
-    public:
+    struct ContentRegistry {
         ContentRegistry() = delete;
 
         /* Settings Registry. Allows adding of new entries into the ImHex preferences window. */
@@ -83,10 +83,10 @@ namespace hex {
 
             struct Function {
                 u32 parameterCount;
-                std::function<hex::lang::ASTNode*(std::vector<hex::lang::ASTNode*>)> func;
+                std::function<hex::lang::ASTNode*(hex::lang::LogConsole&, std::vector<hex::lang::ASTNode*>)> func;
             };
 
-            static void add(std::string_view name, u32 parameterCount, const std::function<hex::lang::ASTNode*(std::vector<hex::lang::ASTNode*>)> &func);
+            static void add(std::string_view name, u32 parameterCount, const std::function<hex::lang::ASTNode*(hex::lang::LogConsole&, std::vector<hex::lang::ASTNode*>)> &func);
             static std::map<std::string, ContentRegistry::PatternLanguageFunctions::Function>& getEntries();
         };
 
