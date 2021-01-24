@@ -1,13 +1,8 @@
 #include "views/view_pattern.hpp"
 
-#include <hex/lang/preprocessor.hpp>
-#include <hex/lang/parser.hpp>
-#include <hex/lang/lexer.hpp>
-#include <hex/lang/validator.hpp>
-#include <hex/lang/evaluator.hpp>
-
 #include "helpers/project_file_handler.hpp"
 #include <hex/helpers/utils.hpp>
+#include <hex/lang/preprocessor.hpp>
 
 #include <magic.h>
 
@@ -47,8 +42,12 @@ namespace hex {
                     outEnd = inEnd;
                     paletteIndex = TextEditor::PaletteIndex::Default;
                 }
-                else if (TokenizeCStyleIdentifier(inBegin, inEnd, outBegin, outEnd))
-                    paletteIndex = TextEditor::PaletteIndex::Identifier;
+                else if (TokenizeCStyleIdentifier(inBegin, inEnd, outBegin, outEnd)) {
+                    if (SharedData::patternLanguageFunctions.contains(std::string(outBegin, outEnd - outBegin)))
+                        paletteIndex = TextEditor::PaletteIndex::LineNumber;
+                    else
+                        paletteIndex = TextEditor::PaletteIndex::Identifier;
+                }
                 else if (TokenizeCStyleNumber(inBegin, inEnd, outBegin, outEnd))
                     paletteIndex = TextEditor::PaletteIndex::Number;
                 else if (TokenizeCStyleCharacterLiteral(inBegin, inEnd, outBegin, outEnd))
@@ -76,6 +75,7 @@ namespace hex {
 
 
     ViewPattern::ViewPattern(std::vector<lang::PatternData*> &patternData) : View("Pattern"), m_patternData(patternData) {
+        this->m_patternLanguageRuntime = new lang::PatternLanguage();
 
         this->m_textEditor.SetLanguageDefinition(PatternLanguage());
         this->m_textEditor.SetShowWhitespaces(false);
@@ -159,12 +159,13 @@ namespace hex {
 
                 preprocessor.preprocess(buffer.data());
 
-                if (foundCorrectType) {
-                    this->m_possiblePatternFile = entry.path();
-                    View::doLater([] { ImGui::OpenPopup("Accept Pattern"); });
-                    ImGui::SetNextWindowSize(ImVec2(200, 100));
-                    break;
-                }
+                if (foundCorrectType)
+                    this->m_possiblePatternFiles.push_back(entry.path().filename().string());
+            }
+
+            if (!this->m_possiblePatternFiles.empty()) {
+                this->m_selectedPatternFile = 0;
+                View::doLater([] { ImGui::OpenPopup("Accept Pattern"); });
             }
         });
 
@@ -265,6 +266,9 @@ namespace hex {
                     this->parsePattern(this->m_textEditor.GetText().data());
                 }
             }
+
+            if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows))
+                ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
         }
         ImGui::End();
 
@@ -272,15 +276,22 @@ namespace hex {
             this->loadPatternFile(this->m_fileBrowser.selected_path);
         }
 
-        if (ImGui::BeginPopupModal("Accept Pattern", nullptr, ImGuiWindowFlags_NoResize)) {
-            ImGui::TextUnformatted("A pattern compatible with this data type has been found:");
-            ImGui::Text("%ls", this->m_possiblePatternFile.filename().c_str());
+        if (ImGui::BeginPopupModal("Accept Pattern", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextWrapped("One or more patterns compatible with this data type has been found");
+
+            char *entries[this->m_possiblePatternFiles.size()];
+
+            for (u32 i = 0; i < this->m_possiblePatternFiles.size(); i++) {
+                entries[i] = this->m_possiblePatternFiles[i].data();
+            }
+
+            ImGui::ListBox("Patterns", &this->m_selectedPatternFile, entries, IM_ARRAYSIZE(entries), 4);
+
             ImGui::NewLine();
             ImGui::Text("Do you want to load it?");
-            ImGui::NewLine();
 
             confirmButtons("Yes", "No", [this]{
-                this->loadPatternFile(this->m_possiblePatternFile.string());
+                this->loadPatternFile("patterns/" + this->m_possiblePatternFiles[this->m_selectedPatternFile]);
                 ImGui::CloseCurrentPopup();
             }, []{
                 ImGui::CloseCurrentPopup();
@@ -332,63 +343,19 @@ namespace hex {
         this->m_console.clear();
         this->postEvent(Events::PatternChanged);
 
-        hex::lang::Preprocessor preprocessor;
-        std::endian defaultDataEndianess = std::endian::native;
+        auto result = this->m_patternLanguageRuntime->executeString(SharedData::currentProvider, buffer);
 
-        preprocessor.addPragmaHandler("endian", [&defaultDataEndianess](std::string value) {
-           if (value == "big") {
-               defaultDataEndianess = std::endian::big;
-               return true;
-           } else if (value == "little") {
-               defaultDataEndianess = std::endian::little;
-               return true;
-           } else if (value == "native") {
-               defaultDataEndianess = std::endian::native;
-               return true;
-           } else
-               return false;
-        });
-        preprocessor.addDefaultPragmaHandlers();
-
-        auto preprocessedCode = preprocessor.preprocess(buffer);
-        if (!preprocessedCode.has_value()) {
-            this->m_textEditor.SetErrorMarkers({ preprocessor.getError() });
-            return;
+        auto error = this->m_patternLanguageRuntime->getError();
+        if (error.has_value()) {
+            this->m_textEditor.SetErrorMarkers({ error.value() });
         }
 
-        hex::lang::Lexer lexer;
-        auto tokens = lexer.lex(preprocessedCode.value());
-        if (!tokens.has_value()) {
-            this->m_textEditor.SetErrorMarkers({ lexer.getError() });
-            return;
+        this->m_console = this->m_patternLanguageRuntime->getConsoleLog();
+
+        if (result.has_value()) {
+            this->m_patternData = std::move(result.value());
+            View::postEvent(Events::PatternChanged);
         }
-
-        hex::lang::Parser parser;
-        auto ast = parser.parse(tokens.value());
-        if (!ast.has_value()) {
-            this->m_textEditor.SetErrorMarkers({ parser.getError() });
-            return;
-        }
-
-        SCOPE_EXIT( for(auto &node : ast.value()) delete node; );
-
-        hex::lang::Validator validator;
-        auto validatorResult = validator.validate(ast.value());
-        if (!validatorResult) {
-            this->m_textEditor.SetErrorMarkers({ validator.getError() });
-            return;
-        }
-
-        auto provider = SharedData::currentProvider;
-        hex::lang::Evaluator evaluator(provider, defaultDataEndianess);
-
-        auto patternData = evaluator.evaluate(ast.value());
-        this->m_console = evaluator.getConsole().getLog();
-        if (!patternData.has_value())
-            return;
-
-        this->m_patternData = patternData.value();
-        View::postEvent(Events::PatternChanged);
     }
 
 }

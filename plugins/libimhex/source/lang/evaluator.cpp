@@ -11,12 +11,6 @@
 
 namespace hex::lang {
 
-    Evaluator::Evaluator(prv::Provider* &provider, std::endian defaultDataEndian)
-        : m_provider(provider), m_defaultDataEndian(defaultDataEndian) {
-
-        this->registerBuiltinFunctions();
-    }
-
     ASTNodeIntegerLiteral* Evaluator::evaluateScopeResolution(ASTNodeScopeResolution *node) {
         ASTNode *currScope = nullptr;
         for (const auto &identifier : node->getPath()) {
@@ -157,7 +151,7 @@ namespace hex::lang {
             this->getConsole().abortEvaluation(hex::format("invalid number of parameters for function '%s'. Expected %d", node->getFunctionName().data(), function.parameterCount));
         }
 
-        return function.func(this->getConsole(), evaluatedParams);
+        return function.func(*this, evaluatedParams);
     }
 
 #define FLOAT_BIT_OPERATION(name) \
@@ -331,6 +325,52 @@ namespace hex::lang {
         return evaluateOperator(leftInteger, rightInteger, node->getOperator());
     }
 
+    PatternData* Evaluator::evaluateAttributes(ASTNode *currNode, PatternData *currPattern) {
+        auto attributableNode = dynamic_cast<Attributable*>(currNode);
+        if (attributableNode == nullptr)
+            this->getConsole().abortEvaluation("attributes applied to invalid expression");
+
+        auto handleVariableAttributes = [this, &currPattern](auto attribute, auto value) {
+
+            if (attribute == "color" && value.has_value())
+                currPattern->setColor(hex::changeEndianess(u32(strtoul(value->data(), nullptr, 0)) << 8, std::endian::big));
+            else if (attribute == "name" && value.has_value())
+                currPattern->setVariableName(value->data());
+            else if (attribute == "comment" && value.has_value())
+                currPattern->setComment(value->data());
+            else
+                this->getConsole().abortEvaluation("unknown or invalid attribute");
+
+        };
+
+        auto &attributes = attributableNode->getAttributes();
+
+        if (attributes.empty())
+            return currPattern;
+
+        if (auto variableDeclNode = dynamic_cast<ASTNodeVariableDecl*>(currNode); variableDeclNode != nullptr) {
+            for (auto &attribute : attributes)
+                handleVariableAttributes(attribute->getAttribute(), attribute->getValue());
+        } else if (auto arrayDeclNode = dynamic_cast<ASTNodeArrayVariableDecl*>(currNode); arrayDeclNode != nullptr) {
+            for (auto &attribute : attributes)
+                handleVariableAttributes(attribute->getAttribute(), attribute->getValue());
+        } else if (auto pointerDeclNode = dynamic_cast<ASTNodePointerVariableDecl*>(currNode); pointerDeclNode != nullptr) {
+            for (auto &attribute : attributes)
+                handleVariableAttributes(attribute->getAttribute(), attribute->getValue());
+        } else if (auto structNode = dynamic_cast<ASTNodeStruct*>(currNode); structNode != nullptr) {
+            this->getConsole().abortEvaluation("unknown or invalid attribute");
+        } else if (auto unionNode = dynamic_cast<ASTNodeUnion*>(currNode); unionNode != nullptr) {
+            this->getConsole().abortEvaluation("unknown or invalid attribute");
+        } else if (auto enumNode = dynamic_cast<ASTNodeEnum*>(currNode); enumNode != nullptr) {
+            this->getConsole().abortEvaluation("unknown or invalid attribute");
+        } else if (auto bitfieldNode = dynamic_cast<ASTNodeBitfield*>(currNode); bitfieldNode != nullptr) {
+            this->getConsole().abortEvaluation("unknown or invalid attribute");
+        } else
+            this->getConsole().abortEvaluation("attributes applied to invalid expression");
+
+        return currPattern;
+    }
+
     PatternData* Evaluator::evaluateBuiltinType(ASTNodeBuiltinType *node) {
         auto &type = node->getType();
         auto typeSize = Token::getTypeSize(type);
@@ -400,7 +440,7 @@ namespace hex::lang {
             this->evaluateMember(member, memberPatterns, true);
         }
 
-        return new PatternDataStruct(startOffset, this->m_currOffset - startOffset, memberPatterns);
+        return this->evaluateAttributes(node, new PatternDataStruct(startOffset, this->m_currOffset - startOffset, memberPatterns));
     }
 
     PatternData* Evaluator::evaluateUnion(ASTNodeUnion *node) {
@@ -421,7 +461,7 @@ namespace hex::lang {
 
         this->m_currOffset += size;
 
-        return new PatternDataUnion(startOffset, size, memberPatterns);
+        return this->evaluateAttributes(node, new PatternDataUnion(startOffset, size, memberPatterns));
     }
 
     PatternData* Evaluator::evaluateEnum(ASTNodeEnum *node) {
@@ -451,7 +491,7 @@ namespace hex::lang {
 
         this->m_currOffset += size;
 
-        return new PatternDataEnum(startOffset, size, entryPatterns);;
+        return this->evaluateAttributes(node, new PatternDataEnum(startOffset, size, entryPatterns));
     }
 
     PatternData* Evaluator::evaluateBitfield(ASTNodeBitfield *node) {
@@ -484,7 +524,7 @@ namespace hex::lang {
         size_t size = (bits + 7) / 8;
         this->m_currOffset += size;
 
-        return new PatternDataBitfield(startOffset, size, entryPatterns);
+        return this->evaluateAttributes(node, new PatternDataBitfield(startOffset, size, entryPatterns));
     }
 
     PatternData* Evaluator::evaluateType(ASTNodeTypeDecl *node) {
@@ -544,7 +584,7 @@ namespace hex::lang {
 
         pattern->setVariableName(node->getName().data());
 
-        return pattern;
+        return this->evaluateAttributes(node, pattern);
     }
 
     PatternData* Evaluator::evaluateArray(ASTNodeArrayVariableDecl *node) {
@@ -637,7 +677,7 @@ namespace hex::lang {
 
         pattern->setVariableName(node->getName().data());
 
-        return pattern;
+        return this->evaluateAttributes(node, pattern);
     }
 
     PatternData* Evaluator::evaluatePointer(ASTNodePointerVariableDecl *node) {
@@ -694,10 +734,16 @@ namespace hex::lang {
         pattern->setVariableName(node->getName().data());
         pattern->setEndian(this->getCurrentEndian());
 
-        return pattern;
+        return this->evaluateAttributes(node, pattern);
     }
 
     std::optional<std::vector<PatternData*>> Evaluator::evaluate(const std::vector<ASTNode *> &ast) {
+
+        this->m_globalMembers.clear();
+        this->m_currMembers.clear();
+        this->m_types.clear();
+        this->m_endianStack.clear();
+        this->m_currOffset = 0;
 
         try {
             for (const auto& node : ast) {
@@ -720,12 +766,9 @@ namespace hex::lang {
             }
         } catch (LogConsole::EvaluateError &e) {
             this->getConsole().log(LogConsole::Level::Error, e);
-            this->m_endianStack.clear();
 
             return { };
         }
-
-        this->m_endianStack.clear();
 
         return this->m_globalMembers;
     }

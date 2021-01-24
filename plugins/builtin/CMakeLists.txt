@@ -1,17 +1,24 @@
 cmake_minimum_required(VERSION 3.16)
-
 # Change this to the name of your plugin #
-project(example)
+project(builtin)
 
 # Add your source files here #
 add_library(${PROJECT_NAME} SHARED
-        source/plugin_example.cpp
+        source/plugin_builtin.cpp
+
+        source/content/command_palette_commands.cpp
+        source/content/data_inspector.cpp
+        source/content/lang_builtin_functions.cpp
+        source/content/settings_entries.cpp
+        source/content/tools_entries.cpp
+
+        source/math_evaluator.cpp
 )
 
 # Add additional include directories here #
 target_include_directories(${PROJECT_NAME} PRIVATE include)
 # Add additional libraries here #
-target_link_libraries(${PROJECT_NAME} PRIVATE libimhex)
+target_link_libraries(${PROJECT_NAME} PRIVATE libimhex LLVMDemangle)
 
 
 

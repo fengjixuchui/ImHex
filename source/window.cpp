@@ -79,7 +79,11 @@ namespace hex {
                 if (!view->getWindowOpenState())
                     continue;
 
-                ImGui::SetNextWindowSizeConstraints(view->getMinSize(), view->getMaxSize());
+                auto minSize = view->getMinSize();
+                minSize.x *= this->m_globalScale;
+                minSize.y *= this->m_globalScale;
+
+                ImGui::SetNextWindowSizeConstraints(minSize, view->getMaxSize());
                 view->drawContent();
             }
 
@@ -141,9 +145,11 @@ namespace hex {
                                      | ImGuiWindowFlags_NoMove      | ImGuiWindowFlags_NoResize
                                      | ImGuiWindowFlags_NoNavFocus  | ImGuiWindowFlags_NoBringToFrontOnFocus;
 
+        ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
         if (ImGui::Begin("DockSpace", nullptr, windowFlags)) {
             ImGui::PopStyleVar(2);
-            ImGui::DockSpace(ImGui::GetID("MainDock"), ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
+            ImGui::DockSpace(ImGui::GetID("MainDock"), ImVec2(0.0f, 0.0f));
 
             if (ImGui::BeginMenuBar()) {
 
@@ -270,8 +276,21 @@ namespace hex {
         });
 
         glfwSetKeyCallback(this->m_window, [](GLFWwindow *window, int key, int scancode, int action, int mods) {
-            if (action == GLFW_PRESS)
+            if (action == GLFW_PRESS) {
                 Window::s_currShortcut = { key, mods };
+                auto &io = ImGui::GetIO();
+                io.KeysDown[key] = true;
+                io.KeyCtrl  = (mods & GLFW_MOD_CONTROL) != 0;
+                io.KeyShift = (mods & GLFW_MOD_SHIFT) != 0;
+                io.KeyAlt   = (mods & GLFW_MOD_ALT) != 0;
+            }
+            else if (action == GLFW_RELEASE) {
+                auto &io = ImGui::GetIO();
+                io.KeysDown[key] = false;
+                io.KeyCtrl  = (mods & GLFW_MOD_CONTROL) != 0;
+                io.KeyShift = (mods & GLFW_MOD_SHIFT) != 0;
+                io.KeyAlt   = (mods & GLFW_MOD_ALT) != 0;
+            }
         });
 
         glfwSetDropCallback(this->m_window, [](GLFWwindow *window, int count, const char **paths) {
@@ -300,8 +319,30 @@ namespace hex {
         ImGuiIO& io = ImGui::GetIO();
         ImGuiStyle& style = ImGui::GetStyle();
 
-        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_ViewportsEnable;
+        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_ViewportsEnable | ImGuiConfigFlags_NavEnableKeyboard;
         io.ConfigViewportsNoTaskBarIcon = true;
+        io.KeyMap[ImGuiKey_Tab]         = GLFW_KEY_TAB;
+        io.KeyMap[ImGuiKey_LeftArrow]   = GLFW_KEY_LEFT;
+        io.KeyMap[ImGuiKey_RightArrow]  = GLFW_KEY_RIGHT;
+        io.KeyMap[ImGuiKey_UpArrow]     = GLFW_KEY_UP;
+        io.KeyMap[ImGuiKey_DownArrow]   = GLFW_KEY_DOWN;
+        io.KeyMap[ImGuiKey_PageUp]      = GLFW_KEY_PAGE_UP;
+        io.KeyMap[ImGuiKey_PageDown]    = GLFW_KEY_PAGE_DOWN;
+        io.KeyMap[ImGuiKey_Home]        = GLFW_KEY_HOME;
+        io.KeyMap[ImGuiKey_End]         = GLFW_KEY_END;
+        io.KeyMap[ImGuiKey_Insert]      = GLFW_KEY_INSERT;
+        io.KeyMap[ImGuiKey_Delete]      = GLFW_KEY_DELETE;
+        io.KeyMap[ImGuiKey_Backspace]   = GLFW_KEY_BACKSPACE;
+        io.KeyMap[ImGuiKey_Space]       = GLFW_KEY_SPACE;
+        io.KeyMap[ImGuiKey_Enter]       = GLFW_KEY_ENTER;
+        io.KeyMap[ImGuiKey_Escape]      = GLFW_KEY_ESCAPE;
+        io.KeyMap[ImGuiKey_KeyPadEnter] = GLFW_KEY_KP_ENTER;
+        io.KeyMap[ImGuiKey_A]           = GLFW_KEY_A;
+        io.KeyMap[ImGuiKey_C]           = GLFW_KEY_C;
+        io.KeyMap[ImGuiKey_V]           = GLFW_KEY_V;
+        io.KeyMap[ImGuiKey_X]           = GLFW_KEY_X;
+        io.KeyMap[ImGuiKey_Y]           = GLFW_KEY_Y;
+        io.KeyMap[ImGuiKey_Z]           = GLFW_KEY_Z;
 
         if (this->m_globalScale != 0.0f)
             style.ScaleAllSizes(this->m_globalScale);

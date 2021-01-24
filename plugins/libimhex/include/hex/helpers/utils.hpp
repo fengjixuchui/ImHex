@@ -76,6 +76,38 @@ namespace hex {
 
 namespace hex {
 
+    inline std::string to_string(u128 value) {
+        char data[45] = { 0 };
+
+        u8 index = sizeof(data) - 2;
+        while (value != 0 && index != 0) {
+            data[index] = '0' + value % 10;
+            value /= 10;
+            index--;
+        }
+
+        return std::string(data + index + 1);
+    }
+
+    inline std::string to_string(s128 value) {
+        char data[45] = { 0 };
+
+        u128 unsignedValue = value < 0 ? -value : value;
+
+        u8 index = sizeof(data) - 2;
+        while (unsignedValue != 0 && index != 0) {
+            data[index] = '0' + unsignedValue % 10;
+            unsignedValue /= 10;
+            index--;
+        }
+
+        if (value < 0) {
+            data[index] = '-';
+            return std::string(data + index);
+        } else
+            return std::string(data + index + 1);
+    }
+
     template<typename ... Args>
     inline std::string format(const char *format, Args ... args) {
         ssize_t size = snprintf( nullptr, 0, format, args ... );
@@ -119,8 +151,10 @@ namespace hex {
             return __builtin_bswap32(value);
         else if constexpr (sizeof(T) == 8)
             return __builtin_bswap64(value);
+        else if constexpr (sizeof(T) == 16)
+            return T(__builtin_bswap64(value & 0xFFFF'FFFF'FFFF'FFFF)) << 64 | __builtin_bswap64(value >> 64);
         else
-                static_assert(always_false<T>::value, "Invalid type provided!");
+            static_assert(always_false<T>::value, "Invalid type provided!");
     }
 
     template<typename T>
@@ -136,11 +170,8 @@ namespace hex {
             return __builtin_bswap32(value);
         else if (size == 8)
             return __builtin_bswap64(value);
-        else if (size == 16) {
-            u64 parts[2];
-            std::memcpy(parts, &value, size);
-            return u128(parts[1]) << 64 | u128(parts[0]);
-        }
+        else if (size == 16)
+            return u128(__builtin_bswap64(u128(value) & 0xFFFF'FFFF'FFFF'FFFF)) << 64 | __builtin_bswap64(u128(value) >> 64);
         else
             throw std::invalid_argument("Invalid value size!");
     }
