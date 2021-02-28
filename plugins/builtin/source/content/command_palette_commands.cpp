@@ -8,7 +8,7 @@ namespace hex::plugin::builtin {
 
         hex::ContentRegistry::CommandPaletteCommands::add(
                 hex::ContentRegistry::CommandPaletteCommands::Type::SymbolCommand,
-                "#", "Calculator",
+                "#", "hex.builtin.command.calc.desc",
                 [](auto input) {
                     hex::MathEvaluator evaluator;
                     evaluator.registerStandardVariables();
@@ -18,12 +18,23 @@ namespace hex::plugin::builtin {
 
                     try {
                         result = evaluator.evaluate(input);
-                    } catch (std::runtime_error &e) {}
+                    } catch (std::exception &e) {}
+
 
                     if (result.has_value())
                         return hex::format("#%s = %Lf", input.data(), result.value());
                     else
                         return hex::format("#%s = ???", input.data());
+                });
+
+        hex::ContentRegistry::CommandPaletteCommands::add(
+                hex::ContentRegistry::CommandPaletteCommands::Type::KeywordCommand,
+                "/web", "hex.builtin.command.web.desc",
+                [](auto input) {
+                    return hex::format("hex.builtin.command.web.result"_lang, input.data());
+                },
+                [](auto input) {
+                    hex::openWebpage(input);
                 });
 
     }

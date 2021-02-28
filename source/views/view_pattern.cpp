@@ -6,6 +6,8 @@
 
 #include <magic.h>
 
+#include <imgui_imhex_extensions.h>
+
 namespace hex {
 
     static const TextEditor::LanguageDefinition& PatternLanguage() {
@@ -74,7 +76,7 @@ namespace hex {
     }
 
 
-    ViewPattern::ViewPattern(std::vector<lang::PatternData*> &patternData) : View("Pattern"), m_patternData(patternData) {
+    ViewPattern::ViewPattern(std::vector<lang::PatternData*> &patternData) : View("hex.view.pattern.name"_lang), m_patternData(patternData) {
         this->m_patternLanguageRuntime = new lang::PatternLanguage();
 
         this->m_textEditor.SetLanguageDefinition(PatternLanguage());
@@ -153,11 +155,11 @@ namespace hex {
                 size_t size = ftell(file);
                 rewind(file);
 
-                std::vector<char> buffer( size + 1, 0x00);
-                fread(buffer.data(), 1, size, file);
+                std::vector<char> patternBuffer( size + 1, 0x00);
+                fread(patternBuffer.data(), 1, size, file);
                 fclose(file);
 
-                preprocessor.preprocess(buffer.data());
+                preprocessor.preprocess(patternBuffer.data());
 
                 if (foundCorrectType)
                     this->m_possiblePatternFiles.push_back(entry.path().filename().string());
@@ -165,44 +167,29 @@ namespace hex {
 
             if (!this->m_possiblePatternFiles.empty()) {
                 this->m_selectedPatternFile = 0;
-                View::doLater([] { ImGui::OpenPopup("Accept Pattern"); });
+                View::doLater([] { ImGui::OpenPopup("hex.view.pattern.accept_pattern"_lang); });
             }
         });
 
         /* Settings */
         {
 
-            constexpr auto SettingsCategoryInterface    = "Interface";
-
-            constexpr auto SettingColorTheme            = "Color theme";
-
-            ContentRegistry::Settings::add(SettingsCategoryInterface, SettingColorTheme, 0, [](nlohmann::json &setting) {
-                static int selection = setting;
-                if (ImGui::Combo("##nolabel", &selection, "Dark\0Light\0Classic\0")) {
-                    setting = selection;
-                    return true;
-                }
-
-                return false;
-            });
-
             View::subscribeEvent(Events::SettingsChanged, [this](auto) {
-                int theme = ContentRegistry::Settings::getSettingsData()[SettingsCategoryInterface][SettingColorTheme];
+                auto theme = ContentRegistry::Settings::getSetting("hex.builtin.setting.interface", "hex.builtin.setting.interface.color");
 
-                switch (theme) {
-                    default:
-                    case 0: /* Dark theme */
-                        ImGui::StyleColorsDark();
-                        this->m_textEditor.SetPalette(TextEditor::GetDarkPalette());
-                        break;
-                    case 1: /* Light theme */
-                        ImGui::StyleColorsLight();
-                        this->m_textEditor.SetPalette(TextEditor::GetLightPalette());
-                        break;
-                    case 2: /* Classic theme */
-                        ImGui::StyleColorsClassic();
-                        this->m_textEditor.SetPalette(TextEditor::GetRetroBluePalette());
-                        break;
+                if (theme.has_value()) {
+                    switch (static_cast<int>(theme.value())) {
+                        default:
+                        case 0: /* Dark theme */
+                            this->m_textEditor.SetPalette(TextEditor::GetDarkPalette());
+                            break;
+                        case 1: /* Light theme */
+                            this->m_textEditor.SetPalette(TextEditor::GetLightPalette());
+                            break;
+                        case 2: /* Classic theme */
+                            this->m_textEditor.SetPalette(TextEditor::GetRetroBluePalette());
+                            break;
+                    }
                 }
             });
 
@@ -210,14 +197,16 @@ namespace hex {
     }
 
     ViewPattern::~ViewPattern() {
+        delete this->m_patternLanguageRuntime;
+
         View::unsubscribeEvent(Events::ProjectFileStore);
         View::unsubscribeEvent(Events::ProjectFileLoad);
     }
 
     void ViewPattern::drawMenu() {
-        if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Load pattern...")) {
-                View::openFileBrowser("Open Hex Pattern", imgui_addons::ImGuiFileBrowser::DialogMode::OPEN, ".hexpat", [this](auto path) {
+        if (ImGui::BeginMenu("hex.menu.file"_lang)) {
+            if (ImGui::MenuItem("hex.view.pattern.menu.file.load_pattern"_lang)) {
+                View::openFileBrowser("hex.view.pattern.open_pattern"_lang, DialogMode::Open, { { "Pattern File", "hexpat" } }, [this](auto path) {
                     this->loadPatternFile(path);
                 });
             }
@@ -226,17 +215,19 @@ namespace hex {
     }
 
     void ViewPattern::drawContent() {
-        if (ImGui::Begin("Pattern", &this->getWindowOpenState(), ImGuiWindowFlags_None | ImGuiWindowFlags_NoCollapse)) {
+        if (ImGui::Begin("hex.view.pattern.name"_lang, &this->getWindowOpenState(), ImGuiWindowFlags_None | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
             auto provider = SharedData::currentProvider;
 
             if (provider != nullptr && provider->isAvailable()) {
                 auto textEditorSize = ImGui::GetContentRegionAvail();
                 textEditorSize.y *= 4.0/5.0;
-                this->m_textEditor.Render("Pattern", textEditorSize, true);
+                textEditorSize.y -= ImGui::GetTextLineHeightWithSpacing();
+                this->m_textEditor.Render("hex.view.pattern.name"_lang, textEditorSize, true);
 
                 auto consoleSize = ImGui::GetContentRegionAvail();
-                ImGui::PushStyleColor(ImGuiCol_ChildBg, this->m_textEditor.GetPalette()[u32(TextEditor::PaletteIndex::Background)]);
+                consoleSize.y -= ImGui::GetTextLineHeightWithSpacing();
 
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, this->m_textEditor.GetPalette()[u32(TextEditor::PaletteIndex::Background)]);
                 if (ImGui::BeginChild("##console", consoleSize, true, ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
                     for (auto &[level, message] : this->m_console) {
                         switch (level) {
@@ -261,23 +252,38 @@ namespace hex {
                     }
                 }
                 ImGui::EndChild();
-
                 ImGui::PopStyleColor(1);
 
-                if (this->m_textEditor.IsTextChanged()) {
+                ImGui::Disabled([this]{
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(ImColor(0x20, 0x85, 0x20)));
+                    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1);
+
+                    if (ImGui::ArrowButton("evaluate", ImGuiDir_Right))
+                        this->parsePattern(this->m_textEditor.GetText().data());
+
+                    ImGui::PopStyleVar();
+                    ImGui::PopStyleColor();
+                }, this->m_evaluatorRunning);
+
+                ImGui::SameLine();
+                if (this->m_evaluatorRunning)
+                     ImGui::TextSpinner("hex.view.pattern.evaluating"_lang);
+                else
+                    ImGui::Checkbox("hex.view.pattern.auto"_lang, &this->m_runAutomatically);
+
+                if (this->m_textEditor.IsTextChanged() && this->m_runAutomatically) {
                     this->parsePattern(this->m_textEditor.GetText().data());
                 }
             }
 
-            if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows))
-                ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
+            View::discardNavigationRequests();
         }
         ImGui::End();
+    }
 
-
-
-        if (ImGui::BeginPopupModal("Accept Pattern", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::TextWrapped("One or more patterns compatible with this data type has been found");
+    void ViewPattern::drawAlwaysVisible() {
+        if (ImGui::BeginPopupModal("hex.view.pattern.accept_pattern"_lang, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextWrapped("hex.view.pattern.accept_pattern.desc"_lang);
 
             char *entries[this->m_possiblePatternFiles.size()];
 
@@ -285,12 +291,12 @@ namespace hex {
                 entries[i] = this->m_possiblePatternFiles[i].data();
             }
 
-            ImGui::ListBox("Patterns", &this->m_selectedPatternFile, entries, IM_ARRAYSIZE(entries), 4);
+            ImGui::ListBox("hex.view.pattern.accept_pattern.patterns"_lang, &this->m_selectedPatternFile, entries, IM_ARRAYSIZE(entries), 4);
 
             ImGui::NewLine();
-            ImGui::Text("Do you want to load it?");
+            ImGui::Text("hex.view.pattern.accept_pattern.question"_lang);
 
-            confirmButtons("Yes", "No", [this]{
+            confirmButtons("hex.common.yes"_lang, "hex.common.no"_lang, [this]{
                 this->loadPatternFile("patterns/" + this->m_possiblePatternFiles[this->m_selectedPatternFile]);
                 ImGui::CloseCurrentPopup();
             }, []{
@@ -305,8 +311,8 @@ namespace hex {
     }
 
 
-    void ViewPattern::loadPatternFile(std::string path) {
-        FILE *file = fopen(path.c_str(), "rb");
+    void ViewPattern::loadPatternFile(std::string_view path) {
+        FILE *file = fopen(path.data(), "rb");
 
         if (file != nullptr) {
             char *buffer;
@@ -338,24 +344,31 @@ namespace hex {
     }
 
     void ViewPattern::parsePattern(char *buffer) {
+        this->m_evaluatorRunning = true;
+
         this->clearPatternData();
         this->m_textEditor.SetErrorMarkers({ });
         this->m_console.clear();
-        this->postEvent(Events::PatternChanged);
+        View::postEvent(Events::PatternChanged);
 
-        auto result = this->m_patternLanguageRuntime->executeString(SharedData::currentProvider, buffer);
+        std::thread([this, buffer = std::string(buffer)] {
+            auto result = this->m_patternLanguageRuntime->executeString(SharedData::currentProvider, buffer);
 
-        auto error = this->m_patternLanguageRuntime->getError();
-        if (error.has_value()) {
-            this->m_textEditor.SetErrorMarkers({ error.value() });
-        }
+            auto error = this->m_patternLanguageRuntime->getError();
+            if (error.has_value()) {
+                this->m_textEditor.SetErrorMarkers({ error.value() });
+            }
 
-        this->m_console = this->m_patternLanguageRuntime->getConsoleLog();
+            this->m_console = this->m_patternLanguageRuntime->getConsoleLog();
 
-        if (result.has_value()) {
-            this->m_patternData = std::move(result.value());
-            View::postEvent(Events::PatternChanged);
-        }
+            if (result.has_value()) {
+                this->m_patternData = std::move(result.value());
+                View::doLater([]{ View::postEvent(Events::PatternChanged); });
+            }
+
+            this->m_evaluatorRunning = false;
+        }).detach();
+
     }
 
 }

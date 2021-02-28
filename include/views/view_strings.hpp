@@ -24,15 +24,16 @@ namespace hex {
         void drawMenu() override;
 
     private:
-        bool m_shouldInvalidate = false;
+        bool m_searching = false;
 
         std::vector<FoundString> m_foundStrings;
         int m_minimumLength = 5;
-        char *m_filter;
+        std::vector<char> m_filter;
 
         std::string m_selectedString;
         std::string m_demangledName;
 
+        void searchStrings();
         void createStringContextMenu(const FoundString &foundString);
     };
 

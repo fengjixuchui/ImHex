@@ -3,9 +3,13 @@
 #include <hex.hpp>
 
 #include <imgui.h>
-#include <ImGuiFileBrowser.h>
+#include <imgui_imhex_extensions.h>
+
+#include <fontawesome_font.h>
+#include <nfd.hpp>
 
 #include <hex/api/event.hpp>
+#include <hex/providers/provider.hpp>
 
 #include <functional>
 #include <string>
@@ -20,10 +24,19 @@ namespace hex {
         virtual ~View() = default;
 
         virtual void drawContent() = 0;
+        virtual void drawAlwaysVisible() { }
         virtual void drawMenu();
         virtual bool handleShortcut(int key, int mods);
+        virtual bool isAvailable();
+        virtual bool shouldProcess() { return this->isAvailable() && this->getWindowOpenState(); }
 
-        static void openFileBrowser(std::string title, imgui_addons::ImGuiFileBrowser::DialogMode mode, std::string validExtensions, const std::function<void(std::string)> &callback);
+        enum class DialogMode {
+            Open,
+            Save,
+            Folder
+        };
+
+        static void openFileBrowser(std::string_view title, DialogMode mode, const std::vector<nfdfilteritem_t> &validExtensions, const std::function<void(std::string)> &callback);
         static void doLater(std::function<void()> &&function);
         static std::vector<std::function<void()>>& getDeferedCalls();
 
@@ -47,13 +60,13 @@ namespace hex {
 
         void unsubscribeEvent(Events eventType);
 
-
+        void discardNavigationRequests();
     protected:
         void confirmButtons(const char *textLeft, const char *textRight, const std::function<void()> &leftButtonFn, const std::function<void()> &rightButtonFn);
 
     private:
         std::string m_viewName;
-        bool m_windowOpen = false;
+        bool m_windowOpen = this->hasViewMenuItemEntry();
     };
 
 }

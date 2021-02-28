@@ -4,6 +4,7 @@
 #include <functional>
 #include <list>
 #include <map>
+#include <memory>
 #include <vector>
 
 #include <hex/api/content_registry.hpp>
@@ -12,7 +13,6 @@
 #include <hex/views/view.hpp>
 
 #include <imgui.h>
-#include <ImGuiFileBrowser.h>
 
 #include <nlohmann/json.hpp>
 
@@ -25,6 +25,8 @@ namespace hex::plugin::internal {
 namespace hex {
 
     namespace prv { class Provider; }
+    namespace dp { class Node; }
+    class View;
 
     class SharedData {
         SharedData() = default;
@@ -54,18 +56,22 @@ namespace hex {
         static u32 customEventsLastId;
         static std::vector<ContentRegistry::CommandPaletteCommands::Entry> commandPaletteCommands;
         static std::map<std::string, ContentRegistry::PatternLanguageFunctions::Function> patternLanguageFunctions;
-        static std::vector<View*> views;
+        static std::vector<std::unique_ptr<View>> views;
         static std::vector<ContentRegistry::Tools::Entry> toolsEntries;
         static std::vector<ContentRegistry::DataInspector::Entry> dataInspectorEntries;
         static u32 patternPaletteOffset;
         static std::string errorPopupMessage;
         static std::list<ImHexApi::Bookmarks::Entry> bookmarkEntries;
 
-        static imgui_addons::ImGuiFileBrowser fileBrowser;
-        static imgui_addons::ImGuiFileBrowser::DialogMode fileBrowserDialogMode;
-        static std::string fileBrowserTitle;
-        static std::string fileBrowserValidExtensions;
-        static std::function<void(std::string)> fileBrowserCallback;
+        static std::map<std::string, std::string> languageNames;
+        static std::map<std::string, std::vector<LanguageDefinition>> languageDefinitions;
+        static std::map<std::string, std::string> loadedLanguageStrings;
+
+        static std::vector<ContentRegistry::Interface::DrawCallback> welcomeScreenEntries;
+        static std::vector<ContentRegistry::Interface::DrawCallback> footerItems;
+
+        static std::vector<ContentRegistry::DataProcessorNode::Entry> dataProcessorNodes;
+        static u32 dataProcessorNodeIdCounter;
 
         static int mainArgc;
         static char **mainArgv;

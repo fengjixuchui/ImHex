@@ -16,6 +16,10 @@ namespace hex {
     void View::drawMenu() { }
     bool View::handleShortcut(int key, int mods) { return false; }
 
+    bool View::isAvailable() {
+        return SharedData::currentProvider != nullptr && SharedData::currentProvider->isAvailable();
+    }
+
     std::vector<std::function<void()>>& View::getDeferedCalls() {
         return SharedData::deferredCalls;
     }
@@ -24,42 +28,48 @@ namespace hex {
         return EventManager::post(eventType, userData);
     }
 
-    void View::openFileBrowser(std::string title, imgui_addons::ImGuiFileBrowser::DialogMode mode, std::string validExtensions, const std::function<void(std::string)> &callback) {
-        SharedData::fileBrowserTitle = title;
-        SharedData::fileBrowserDialogMode = mode;
-        SharedData::fileBrowserValidExtensions = std::move(validExtensions);
-        SharedData::fileBrowserCallback = callback;
+    void View::openFileBrowser(std::string_view title, DialogMode mode, const std::vector<nfdfilteritem_t> &validExtensions, const std::function<void(std::string)> &callback) {
+        NFD::Init();
 
-        View::doLater([title]{
-           ImGui::OpenPopup(title.c_str());
-        });
+        nfdchar_t *outPath;
+        nfdresult_t result;
+        switch (mode) {
+            case DialogMode::Open:
+                result = NFD::OpenDialog(outPath, validExtensions.data(), validExtensions.size(), nullptr);
+                break;
+            case DialogMode::Save:
+                result = NFD::SaveDialog(outPath, validExtensions.data(), validExtensions.size(), nullptr);
+                break;
+            case DialogMode::Folder:
+                result = NFD::PickFolder(outPath, nullptr);
+                break;
+            default: __builtin_unreachable();
+        }
+
+        if (result == NFD_OKAY) {
+            callback(outPath);
+            NFD::FreePath(outPath);
+        }
+
+        NFD::Quit();
     }
 
     void View::drawCommonInterfaces() {
         if (ImGui::BeginPopupModal("Error", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("%s", SharedData::errorPopupMessage.c_str());
             ImGui::NewLine();
-            if (ImGui::BeginChild("##scrolling", ImVec2(300, 100))) {
-                ImGui::SetCursorPosX((300 - ImGui::CalcTextSize(SharedData::errorPopupMessage.c_str(), nullptr, false).x) / 2.0F);
-                ImGui::TextWrapped("%s", SharedData::errorPopupMessage.c_str());
-                ImGui::EndChild();
-            }
-            ImGui::NewLine();
-            ImGui::SetCursorPosX(75);
-            if (ImGui::Button("Okay", ImVec2(150, 20)) || ImGui::IsKeyDown(ImGuiKey_Escape))
+            ImGui::Separator();
+            if (ImGui::Button("Okay") || ImGui::IsKeyDown(ImGuiKey_Escape))
                 ImGui::CloseCurrentPopup();
-            ImGui::EndPopup();
-        }
 
-        if (SharedData::fileBrowser.showFileDialog(SharedData::fileBrowserTitle, SharedData::fileBrowserDialogMode, ImVec2(0, 0), SharedData::fileBrowserValidExtensions)) {
-            SharedData::fileBrowserCallback(SharedData::fileBrowser.selected_path);
-            SharedData::fileBrowserTitle = "";
+            ImGui::EndPopup();
         }
     }
 
     void View::showErrorPopup(std::string_view errorMessage) {
         SharedData::errorPopupMessage = errorMessage;
 
-        ImGui::OpenPopup("Error");
+        View::doLater([] { ImGui::OpenPopup("Error"); });
     }
 
     bool View::hasViewMenuItemEntry() {
@@ -93,6 +103,11 @@ namespace hex {
 
     void View::unsubscribeEvent(Events eventType) {
         EventManager::unsubscribe(eventType, this);
+    }
+
+    void View::discardNavigationRequests() {
+        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows))
+            ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
     }
 
     void View::doLater(std::function<void()> &&function) {

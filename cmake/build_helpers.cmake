@@ -36,12 +36,7 @@ macro(findLibraries)
     # Find packages
     find_package(PkgConfig REQUIRED)
 
-    pkg_search_module(CRYPTO libcrypto)
-    if(NOT CRYPTO_FOUND)
-        find_library(CRYPTO crypto REQUIRED)
-    else()
-        set(CRYPTO_INCLUDE_DIRS ${CRYPTO_INCLUDEDIR})
-    endif()
+    find_package(mbedTLS REQUIRED)
 
     pkg_search_module(CAPSTONE REQUIRED capstone)
 
@@ -54,7 +49,12 @@ macro(findLibraries)
     endif()
 
     string(REPLACE "." ";" PYTHON_VERSION_MAJOR_MINOR ${Python_VERSION})
-    list(REMOVE_AT PYTHON_VERSION_MAJOR_MINOR 2)
+
+    list(LENGTH PYTHON_VERSION_MAJOR_MINOR PYTHON_VERSION_COMPONENT_COUNT)
+
+    if (PYTHON_VERSION_COMPONENT_COUNT EQUAL 3)
+        list(REMOVE_AT PYTHON_VERSION_MAJOR_MINOR 2)
+    endif ()
     list(JOIN PYTHON_VERSION_MAJOR_MINOR "." PYTHON_VERSION_MAJOR_MINOR)
 
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_C_FLAGS} -DPYTHON_VERSION_MAJOR_MINOR=\"\\\"${PYTHON_VERSION_MAJOR_MINOR}\"\\\"")
@@ -98,7 +98,11 @@ macro(configurePackageCreation)
     endif()
 
     if (WIN32)
-        set(application_type WIN32)
+        if (CMAKE_BUILD_TYPE EQUAL "DEBUG")
+            set(application_type WIN32)
+        else ()
+            set(application_type)
+        endif ()
         set(imhex_icon "${PROJECT_SOURCE_DIR}/res/resource.rc")
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static-libstdc++ -static-libgcc -Wl,--allow-multiple-definition -static -Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive")
         set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -Wl,-subsystem,windows")
@@ -141,15 +145,11 @@ macro(createPackage)
     file(MAKE_DIRECTORY "plugins")
     foreach (plugin IN LISTS PLUGINS)
         add_subdirectory("plugins/${plugin}")
-        add_custom_command(TARGET imhex POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:${plugin}>
-                $<TARGET_FILE_DIR:imhex>/plugins)
+        set_target_properties(${plugin} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/plugins)
+        add_dependencies(imhex ${plugin})
     endforeach()
-    add_custom_command(TARGET imhex POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:libimhex>
-            $<TARGET_FILE_DIR:imhex>)
+
+    set_target_properties(libimhex PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
     if (WIN32)
         # Install binaries directly in the prefix, usually C:\Program Files\ImHex.
@@ -187,17 +187,39 @@ macro(createPackage)
     ]])
     endif()
 
+    if (UNIX AND NOT APPLE)
+        install(TARGETS libimhex DESTINATION ${CMAKE_INSTALL_PREFIX})
+
+        string(REPLACE ":" ";" EXTRA_MAGICDBS "${EXTRA_MAGICDBS}")
+
+    endif ()
+
+    if (NOT EXTRA_MAGICDBS STREQUAL "")
+        list(GET EXTRA_MAGICDBS -1 EXTRA_MAGICDBS)
+
+        if (NOT EXTRA_MAGICDBS STREQUAL "NOTFOUND")
+            if (EXTRA_MAGICDBS MATCHES ".*\\.mgc")
+                install(FILES "${EXTRA_MAGICDBS}" DESTINATION magic/)
+            else ()
+                install(FILES "${EXTRA_MAGICDBS}.mgc" DESTINATION magic/)
+            endif ()
+        endif ()
+    endif ()
+
     # Compile the imhex-specific magicdb
     add_custom_target(magic_dbs ALL
-            SOURCES magic_dbs/nintendo_magic
+            SOURCES ${MAGICDBS}
             )
     add_custom_command(TARGET magic_dbs
             COMMAND file -C -m ${CMAKE_SOURCE_DIR}/magic_dbs
             )
 
+    foreach (plugin IN LISTS PLUGINS)
+        install(FILES "$<TARGET_FILE:${plugin}>" DESTINATION plugins/)
+    endforeach ()
+
     # Install the magicdb files.
     install(FILES ${CMAKE_CURRENT_BINARY_DIR}/magic_dbs.mgc DESTINATION magic/ RENAME imhex.mgc)
-    install(FILES ${EXTRA_MAGICDBS} DESTINATION magic/)
 
     if (CREATE_BUNDLE)
         include(PostprocessBundle)
@@ -216,7 +238,11 @@ macro(createPackage)
 
         install(TARGETS imhex BUNDLE DESTINATION .)
     else()
-        install(TARGETS imhex RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+        if (WIN32)
+            install(TARGETS imhex RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+        else ()
+            install(TARGETS imhex RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX})
+        endif ()
     endif()
 
 
@@ -235,18 +261,6 @@ function(JOIN OUTPUT GLUE)
     endforeach()
     set(${OUTPUT} "${_TMP_RESULT}" PARENT_SCOPE)
 endfunction()
-
-macro(createMagicDbList)
-    if (DEFINED MAGICDBS)
-        if (WIN32)
-            join(EXTRA_MAGICDBS "\;" ${MAGICDBS})
-        else()
-            join(EXTRA_MAGICDBS ":" ${MAGICDBS})
-        endif()
-    else()
-        set(EXTRA_MAGICDBS "")
-    endif()
-endmacro()
 
 macro(setDefaultBuiltTypeIfUnset)
     if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)

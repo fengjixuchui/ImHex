@@ -5,8 +5,9 @@ pacman -S --needed \
   gcc \
   glfw \
   file \
-  openssl \
+  mbedtls \
   capstone \
   glm \
   python3 \
-  freetype2
+  freetype2 \
+  gtk3

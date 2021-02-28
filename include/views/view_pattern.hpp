@@ -8,10 +8,10 @@
 
 #include <cstring>
 #include <filesystem>
+#include <string_view>
 #include <thread>
 #include <vector>
 
-#include <ImGuiFileBrowser.h>
 #include <TextEditor.h>
 
 namespace hex {
@@ -22,6 +22,7 @@ namespace hex {
         ~ViewPattern() override;
 
         void drawMenu() override;
+        void drawAlwaysVisible() override;
         void drawContent() override;
 
     private:
@@ -29,11 +30,13 @@ namespace hex {
         std::vector<lang::PatternData*> &m_patternData;
         std::vector<std::string> m_possiblePatternFiles;
         int m_selectedPatternFile = 0;
+        bool m_runAutomatically = false;
+        bool m_evaluatorRunning = false;
 
         TextEditor m_textEditor;
         std::vector<std::pair<lang::LogConsole::Level, std::string>> m_console;
 
-        void loadPatternFile(std::string path);
+        void loadPatternFile(std::string_view path);
         void clearPatternData();
         void parsePattern(char *buffer);
     };

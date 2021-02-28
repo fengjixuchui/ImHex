@@ -2,11 +2,11 @@
 
 #include <hex/providers/provider.hpp>
 #include <hex/api/imhex_api.hpp>
-#include "providers/file_provider.hpp"
+#include <hex/helpers/crypto.hpp>
 
 #include <GLFW/glfw3.h>
 
-#include "helpers/crypto.hpp"
+#include "providers/file_provider.hpp"
 #include "helpers/patches.hpp"
 #include "helpers/project_file_handler.hpp"
 #include "helpers/loader_script_handler.hpp"
@@ -17,7 +17,10 @@
 namespace hex {
 
     ViewHexEditor::ViewHexEditor(std::vector<lang::PatternData*> &patternData)
-            : View("Hex Editor"), m_patternData(patternData) {
+            : View("hex.view.hexeditor.name"_lang), m_patternData(patternData) {
+
+        this->m_searchStringBuffer.resize(0xFFF, 0x00);
+        this->m_searchHexBuffer.resize(0xFFF, 0x00);
 
         this->m_memoryEditor.ReadFn = [](const ImU8 *data, size_t off) -> ImU8 {
             auto provider = SharedData::currentProvider;
@@ -26,6 +29,12 @@ namespace hex {
 
             ImU8 byte;
             provider->read(off, &byte, sizeof(ImU8));
+
+            for (auto &overlay : SharedData::currentProvider->getOverlays()) {
+                auto overlayAddress = overlay->getAddress();
+                if (off >= overlayAddress && off < overlayAddress + overlay->getSize())
+                    byte = overlay->getData()[off - overlayAddress];
+            }
 
             return byte;
         };
@@ -45,7 +54,9 @@ namespace hex {
 
             std::optional<u32> currColor, prevColor;
 
-            for (const auto &[region, name, comment, color] : ImHexApi::Bookmarks::getEntries()) {
+            off += SharedData::currentProvider->getBaseAddress();
+
+            for (const auto &[region, name, comment, color, locked] : ImHexApi::Bookmarks::getEntries()) {
                 if (off >= region.address && off < (region.address + region.size))
                     currColor = (color & 0x00FFFFFF) | 0x80000000;
                 if ((off - 1) >= region.address && (off - 1) < (region.address + region.size))
@@ -74,11 +85,13 @@ namespace hex {
             return false;
         };
 
-        this->m_memoryEditor.HoverFn = [](const ImU8 *data, size_t addr) {
+        this->m_memoryEditor.HoverFn = [](const ImU8 *data, size_t off) {
             bool tooltipShown = false;
 
-            for (const auto &[region, name, comment, color] : ImHexApi::Bookmarks::getEntries()) {
-                if (addr >= region.address && addr < (region.address + region.size)) {
+            off += SharedData::currentProvider->getBaseAddress();
+
+            for (const auto &[region, name, comment, color, locked] : ImHexApi::Bookmarks::getEntries()) {
+                if (off >= region.address && off < (region.address + region.size)) {
                     if (!tooltipShown) {
                         ImGui::BeginTooltip();
                         tooltipShown = true;
@@ -91,6 +104,30 @@ namespace hex {
 
             if (tooltipShown)
                 ImGui::EndTooltip();
+        };
+
+        this->m_memoryEditor.DecodeFn = [](const ImU8 *data, size_t addr) -> MemoryEditor::DecodeData {
+            ViewHexEditor *_this = (ViewHexEditor *) data;
+
+            if (_this->m_currEncodingFile.getLongestSequence() == 0)
+                return { ".", 1, 0xFFFF8000 };
+
+            auto &provider = SharedData::currentProvider;
+            size_t size = std::min<size_t>(_this->m_currEncodingFile.getLongestSequence(), provider->getActualSize() - addr);
+
+            std::vector<u8> buffer(size);
+            provider->read(addr, buffer.data(), size);
+
+            auto [decoded, advance] = _this->m_currEncodingFile.getEncodingFor(buffer);
+
+            ImColor color;
+            if (decoded.length() == 1 && std::isalnum(decoded[0])) color = 0xFFFF8000;
+            else if (decoded.length() == 1 && advance == 1) color = 0xFF0000FF;
+            else if (decoded.length() > 1 && advance == 1) color = 0xFF00FFFF;
+            else if (advance > 1) color = 0xFFFFFFFF;
+            else color = 0xFFFF8000;
+
+            return { std::string(decoded), advance, color };
         };
 
         View::subscribeEvent(Events::FileDropped, [this](auto userData) {
@@ -124,15 +161,30 @@ namespace hex {
 
             if (ProjectFile::hasUnsavedChanges()) {
                 glfwSetWindowShouldClose(window, GLFW_FALSE);
-                View::doLater([] { ImGui::OpenPopup("Save Changes"); });
+                View::doLater([] { ImGui::OpenPopup("hex.view.hexeditor.save_changes"_lang); });
             }
         });
 
         View::subscribeEvent(Events::PatternChanged, [this](auto) {
-           this->m_highlightedBytes.clear();
+            this->m_highlightedBytes.clear();
 
-           for (const auto &pattern : this->m_patternData)
-               this->m_highlightedBytes.merge(pattern->getHighlightedAddresses());
+            for (const auto &pattern : this->m_patternData)
+                this->m_highlightedBytes.merge(pattern->getHighlightedAddresses());
+        });
+
+        View::subscribeEvent(Events::OpenWindow, [this](auto name) {
+            if (std::any_cast<const char*>(name) == std::string("Open File")) {
+                View::openFileBrowser("hex.view.hexeditor.open_file"_lang, DialogMode::Open, { }, [this](auto path) {
+                    this->openFile(path);
+                    this->getWindowOpenState() = true;
+                });
+            } else if (std::any_cast<const char*>(name) == std::string("Open Project")) {
+                View::openFileBrowser("hex.view.hexeditor.open_project"_lang, DialogMode::Open, { { "Project File", "hexproj" } }, [this](auto path) {
+                    ProjectFile::load(path);
+                    View::postEvent(Events::ProjectFileLoad);
+                    this->getWindowOpenState() = true;
+                });
+            }
         });
     }
 
@@ -145,15 +197,15 @@ namespace hex {
 
         size_t dataSize = (provider == nullptr || !provider->isReadable()) ? 0x00 : provider->getSize();
 
-        this->m_memoryEditor.DrawWindow("Hex Editor", &this->getWindowOpenState(), this, dataSize, dataSize == 0 ? 0x00 : provider->getBaseAddress());
+        this->m_memoryEditor.DrawWindow("hex.view.hexeditor.name"_lang, &this->getWindowOpenState(), this, dataSize, dataSize == 0 ? 0x00 : provider->getBaseAddress());
 
         if (dataSize != 0x00) {
-            if (ImGui::Begin("Hex Editor")) {
+            if (ImGui::Begin("hex.view.hexeditor.name"_lang)) {
 
-                if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows))
-                    ImGui::OpenPopup("Edit");
+                if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows))
+                    ImGui::OpenPopup("hex.menu.edit"_lang);
 
-                if (ImGui::BeginPopup("Edit")) {
+                if (ImGui::BeginPopup("hex.menu.edit"_lang)) {
                     this->drawEditPopup();
                     ImGui::EndPopup();
                 }
@@ -161,7 +213,7 @@ namespace hex {
                 ImGui::SameLine();
                 ImGui::Spacing();
                 ImGui::SameLine();
-                ImGui::Text("Page %d / %d", provider->getCurrentPage() + 1, provider->getPageCount());
+                ImGui::Text("hex.view.hexeditor.page"_lang, provider->getCurrentPage() + 1, provider->getPageCount());
                 ImGui::SameLine();
 
                 if (ImGui::ArrowButton("prevPage", ImGuiDir_Left)) {
@@ -185,83 +237,6 @@ namespace hex {
             this->drawSearchPopup();
             this->drawGotoPopup();
         }
-
-
-        if (ImGui::BeginPopupModal("Save Changes", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            constexpr auto Message = "You have unsaved changes made to your Project.\nAre you sure you want to exit?";
-            ImGui::NewLine();
-            ImGui::TextUnformatted(Message);
-            ImGui::NewLine();
-
-            confirmButtons("Yes", "No", [] { std::exit(0); }, [] { ImGui::CloseCurrentPopup(); });
-
-            if (ImGui::IsKeyDown(ImGui::GetKeyIndex(ImGuiKey_Escape)))
-                ImGui::CloseCurrentPopup();
-
-            ImGui::EndPopup();
-        }
-
-        if (ImGui::BeginPopupModal("Load File with Loader Script", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            constexpr auto Message = "Load a file using a Python loader script.";
-            ImGui::SetCursorPosX(10);
-            ImGui::TextWrapped(Message);
-
-            ImGui::NewLine();
-            ImGui::InputText("##nolabel", this->m_loaderScriptScriptPath.data(), this->m_loaderScriptScriptPath.length(), ImGuiInputTextFlags_ReadOnly);
-            ImGui::SameLine();
-            if (ImGui::Button("Script")) {
-                View::openFileBrowser("Loader Script: Open Script", imgui_addons::ImGuiFileBrowser::DialogMode::OPEN, ".py", [this](auto path) {
-                    this->m_loaderScriptScriptPath = path;
-                });
-            }
-            ImGui::InputText("##nolabel", this->m_loaderScriptFilePath.data(), this->m_loaderScriptFilePath.length(), ImGuiInputTextFlags_ReadOnly);
-            ImGui::SameLine();
-            if (ImGui::Button("File")) {
-                View::openFileBrowser("Loader Script: Open File", imgui_addons::ImGuiFileBrowser::DialogMode::OPEN, "*.*", [this](auto path) {
-                    this->m_loaderScriptFilePath = path;
-                });
-            }
-            if (ImGui::IsKeyDown(ImGui::GetKeyIndex(ImGuiKey_Escape)))
-                ImGui::CloseCurrentPopup();
-
-            ImGui::NewLine();
-
-            confirmButtons("Load", "Cancel",
-                [this, &provider] {
-                    if (!this->m_loaderScriptScriptPath.empty() && !this->m_loaderScriptFilePath.empty()) {
-                        this->openFile(this->m_loaderScriptFilePath);
-                        LoaderScript::setFilePath(this->m_loaderScriptFilePath);
-                        LoaderScript::setDataProvider(provider);
-                        LoaderScript::processFile(this->m_loaderScriptScriptPath);
-                        ImGui::CloseCurrentPopup();
-                    }
-                },
-                [] {
-                    ImGui::CloseCurrentPopup();
-                }
-            );
-
-            ImGui::EndPopup();
-
-        }
-
-        if (ImGui::BeginPopupModal("Set base address", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::InputText("Address", this->m_baseAddressBuffer, 16, ImGuiInputTextFlags_CharsHexadecimal);
-            ImGui::NewLine();
-
-            confirmButtons("Set", "Cancel",
-            [this, &provider]{
-                provider->setBaseAddress(strtoull(this->m_baseAddressBuffer, nullptr, 16));
-                ImGui::CloseCurrentPopup();
-            }, []{
-                ImGui::CloseCurrentPopup();
-            });
-
-            if (ImGui::IsKeyDown(ImGui::GetKeyIndex(ImGuiKey_Escape)))
-                ImGui::CloseCurrentPopup();
-
-            ImGui::EndPopup();
-        }
     }
 
     static void save() {
@@ -271,7 +246,7 @@ namespace hex {
     }
 
     static void saveAs() {
-        View::openFileBrowser("Save As", imgui_addons::ImGuiFileBrowser::DialogMode::SAVE, "*.*", [](auto path) {
+        View::openFileBrowser("hex.view.hexeditor.save_as"_lang, View::DialogMode::Save, { }, [](auto path) {
             FILE *file = fopen(path.c_str(), "wb");
 
             if (file != nullptr) {
@@ -292,43 +267,121 @@ namespace hex {
                 fclose(file);
             }
         });
-    };
+    }
+
+    void ViewHexEditor::drawAlwaysVisible() {
+        auto provider = SharedData::currentProvider;
+
+        if (ImGui::BeginPopupModal("hex.view.hexeditor.save_changes.title"_lang, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::NewLine();
+            ImGui::TextUnformatted("hex.view.hexeditor.save_changes.desc"_lang);
+            ImGui::NewLine();
+
+            confirmButtons("Yes", "No", [] { View::postEvent(Events::CloseImHex); }, [] { ImGui::CloseCurrentPopup(); });
+
+            if (ImGui::IsKeyDown(ImGui::GetKeyIndex(ImGuiKey_Escape)))
+                ImGui::CloseCurrentPopup();
+
+            ImGui::EndPopup();
+        }
+
+        if (ImGui::BeginPopupModal("hex.view.hexeditor.script.title"_lang, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::SetCursorPosX(10);
+            ImGui::TextWrapped("hex.view.hexeditor.script.desc"_lang);
+
+            ImGui::NewLine();
+            ImGui::InputText("##nolabel", this->m_loaderScriptScriptPath.data(), this->m_loaderScriptScriptPath.length(), ImGuiInputTextFlags_ReadOnly);
+            ImGui::SameLine();
+            if (ImGui::Button("hex.view.hexeditor.script.script"_lang)) {
+                View::openFileBrowser("hex.view.hexeditor.script.script.title"_lang, DialogMode::Open, { { "Python Script", "py" } }, [this](auto path) {
+                    this->m_loaderScriptScriptPath = path;
+                });
+            }
+            ImGui::InputText("##nolabel", this->m_loaderScriptFilePath.data(), this->m_loaderScriptFilePath.length(), ImGuiInputTextFlags_ReadOnly);
+            ImGui::SameLine();
+            if (ImGui::Button("hex.view.hexeditor.script.file"_lang)) {
+                View::openFileBrowser("hex.view.hexeditor.script.file.title"_lang, DialogMode::Open, { }, [this](auto path) {
+                    this->m_loaderScriptFilePath = path;
+                });
+            }
+            if (ImGui::IsKeyDown(ImGui::GetKeyIndex(ImGuiKey_Escape)))
+                ImGui::CloseCurrentPopup();
+
+            ImGui::NewLine();
+
+            confirmButtons("hex.common.load"_lang, "hex.common.cancel"_lang,
+                           [this, &provider] {
+                               if (!this->m_loaderScriptScriptPath.empty() && !this->m_loaderScriptFilePath.empty()) {
+                                   this->openFile(this->m_loaderScriptFilePath);
+                                   LoaderScript::setFilePath(this->m_loaderScriptFilePath);
+                                   LoaderScript::setDataProvider(provider);
+                                   LoaderScript::processFile(this->m_loaderScriptScriptPath);
+                                   ImGui::CloseCurrentPopup();
+                               }
+                           },
+                           [] {
+                               ImGui::CloseCurrentPopup();
+                           }
+            );
+
+            ImGui::EndPopup();
+
+        }
+
+        if (ImGui::BeginPopupModal("hex.view.hexeditor.menu.edit.set_base"_lang, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::InputText("hex.common.address"_lang, this->m_baseAddressBuffer, 16, ImGuiInputTextFlags_CharsHexadecimal);
+            ImGui::NewLine();
+
+            confirmButtons("hex.common.set"_lang, "hex.common.cancel"_lang,
+                           [this, &provider]{
+                               provider->setBaseAddress(strtoull(this->m_baseAddressBuffer, nullptr, 16));
+                               ImGui::CloseCurrentPopup();
+                           }, []{
+                        ImGui::CloseCurrentPopup();
+                    });
+
+            if (ImGui::IsKeyDown(ImGui::GetKeyIndex(ImGuiKey_Escape)))
+                ImGui::CloseCurrentPopup();
+
+            ImGui::EndPopup();
+        }
+    }
 
     void ViewHexEditor::drawMenu() {
         auto provider = SharedData::currentProvider;
 
-        if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Open File...", "CTRL + O")) {
+        if (ImGui::BeginMenu("hex.menu.file"_lang)) {
+            if (ImGui::MenuItem("hex.view.hexeditor.menu.file.open_file"_lang, "CTRL + O")) {
 
-                View::openFileBrowser("Open File", imgui_addons::ImGuiFileBrowser::DialogMode::OPEN, "*.*", [this](auto path) {
+                View::openFileBrowser("hex.view.hexeditor.open_file"_lang, DialogMode::Open, { }, [this](auto path) {
                     this->openFile(path);
                     this->getWindowOpenState() = true;
                 });
             }
 
-            if (ImGui::MenuItem("Save", "CTRL + S", false, provider != nullptr && provider->isWritable())) {
+            if (ImGui::MenuItem("hex.view.hexeditor.menu.file.save"_lang, "CTRL + S", false, provider != nullptr && provider->isWritable())) {
                 save();
             }
 
-            if (ImGui::MenuItem("Save As...", "CTRL + SHIFT + S", false, provider != nullptr && provider->isWritable())) {
+            if (ImGui::MenuItem("hex.view.hexeditor.menu.file.save_as"_lang, "CTRL + SHIFT + S", false, provider != nullptr && provider->isWritable())) {
                 saveAs();
             }
 
             ImGui::Separator();
 
-            if (ImGui::MenuItem("Open Project", "")) {
-                View::openFileBrowser("Open Project", imgui_addons::ImGuiFileBrowser::DialogMode::OPEN, ".hexproj", [this](auto path) {
+            if (ImGui::MenuItem("hex.view.hexeditor.menu.file.open_project"_lang, "")) {
+                View::openFileBrowser("hex.view.hexeditor.menu.file.open_project"_lang, DialogMode::Open, { { "Project File", "hexproj" } }, [this](auto path) {
                     ProjectFile::load(path);
                     View::postEvent(Events::ProjectFileLoad);
                     this->getWindowOpenState() = true;
                 });
             }
 
-            if (ImGui::MenuItem("Save Project", "", false, provider != nullptr && provider->isWritable())) {
+            if (ImGui::MenuItem("hex.view.hexeditor.menu.file.save_project"_lang, "", false, provider != nullptr && provider->isWritable())) {
                 View::postEvent(Events::ProjectFileStore);
 
                 if (ProjectFile::getProjectFilePath() == "") {
-                    View::openFileBrowser("Save Project", imgui_addons::ImGuiFileBrowser::DialogMode::SAVE, ".hexproj", [](auto path) {
+                    View::openFileBrowser("hex.view.hexeditor.save_project"_lang, DialogMode::Save, { { "Project File", "hexproj" } }, [](auto path) {
                         ProjectFile::store(path);
                     });
                 }
@@ -336,32 +389,38 @@ namespace hex {
                     ProjectFile::store();
             }
 
+            if (ImGui::MenuItem("hex.view.hexeditor.menu.file.load_encoding_file"_lang)) {
+                View::openFileBrowser("hex.view.hexeditor.load_enconding_file"_lang, DialogMode::Open, { }, [this](auto path) {
+                    this->m_currEncodingFile = EncodingFile(EncodingFile::Type::Thingy, path);
+                });
+            }
+
             ImGui::Separator();
 
-            if (ImGui::BeginMenu("Import...")) {
-                if (ImGui::MenuItem("Base64 File")) {
+            if (ImGui::BeginMenu("hex.view.hexeditor.menu.file.import"_lang)) {
+                if (ImGui::MenuItem("hex.view.hexeditor.menu.file.import.base64"_lang)) {
 
-                    View::openFileBrowser("Open Base64 File", imgui_addons::ImGuiFileBrowser::DialogMode::OPEN, "*.*", [this](auto path) {
+                    View::openFileBrowser("hex.view.hexeditor.menu.file.import.base64"_lang, DialogMode::Open, { }, [this](auto path) {
                         std::vector<u8> base64;
                         this->loadFromFile(path, base64);
 
                         if (!base64.empty()) {
-                            this->m_dataToSave = decode64(base64);
+                            this->m_dataToSave = crypt::decode64(base64);
 
                             if (this->m_dataToSave.empty())
-                                View::showErrorPopup("File is not in a valid Base64 format!");
+                                View::showErrorPopup("hex.view.hexeditor.base64.import_error"_lang);
                             else
-                                ImGui::OpenPopup("Save Data");
+                                ImGui::OpenPopup("hex.view.hexeditor.save_data"_lang);
                             this->getWindowOpenState() = true;
-                        } else View::showErrorPopup("Failed to open file!");
+                        } else View::showErrorPopup("hex.view.hexeditor.file_open_error"_lang);
                     });
                 }
 
                 ImGui::Separator();
 
-                if (ImGui::MenuItem("IPS Patch")) {
+                if (ImGui::MenuItem("hex.view.hexeditor.menu.file.import.ips"_lang)) {
 
-                   View::openFileBrowser("Apply IPS Patch", imgui_addons::ImGuiFileBrowser::DialogMode::OPEN, "*.*", [this](auto path) {
+                   View::openFileBrowser("hex.view.hexeditor.open_file"_lang, DialogMode::Open, { }, [this](auto path) {
                         auto patchData = hex::readFile(path);
                         auto patch = hex::loadIPSPatch(patchData);
 
@@ -374,8 +433,8 @@ namespace hex {
 
                 }
 
-                if (ImGui::MenuItem("IPS32 Patch")) {
-                    View::openFileBrowser("Apply IPS32 Patch", imgui_addons::ImGuiFileBrowser::DialogMode::OPEN, "*.*", [this](auto path) {
+                if (ImGui::MenuItem("hex.view.hexeditor.menu.file.import.ips32"_lang)) {
+                    View::openFileBrowser("hex.view.hexeditor.open_file"_lang, DialogMode::Open, { }, [this](auto path) {
                         auto patchData = hex::readFile(path);
                         auto patch = hex::loadIPS32Patch(patchData);
 
@@ -386,17 +445,17 @@ namespace hex {
                     });
                 }
 
-                if (ImGui::MenuItem("File with Loader Script")) {
+                if (ImGui::MenuItem("hex.view.hexeditor.menu.file.import.script"_lang)) {
                     this->m_loaderScriptFilePath.clear();
                     this->m_loaderScriptScriptPath.clear();
-                    View::doLater([]{ ImGui::OpenPopup("Load File with Loader Script"); });
+                    View::doLater([]{ ImGui::OpenPopup("hex.view.hexeditor.script.title"_lang); });
                 }
 
                 ImGui::EndMenu();
             }
 
-            if (ImGui::BeginMenu("Export...", provider != nullptr && provider->isWritable())) {
-                if (ImGui::MenuItem("IPS Patch")) {
+            if (ImGui::BeginMenu("hex.view.hexeditor.menu.file.export"_lang, provider != nullptr && provider->isWritable())) {
+                if (ImGui::MenuItem("hex.view.hexeditor.menu.file.export.ips"_lang)) {
                     Patches patches = provider->getPatches();
                     if (!patches.contains(0x00454F45) && patches.contains(0x00454F46)) {
                         u8 value = 0;
@@ -405,11 +464,11 @@ namespace hex {
                     }
 
                     this->m_dataToSave = generateIPSPatch(patches);
-                    View::openFileBrowser("Export File", imgui_addons::ImGuiFileBrowser::DialogMode::SAVE, "*.*", [this](auto path) {
+                    View::openFileBrowser("hex.view.hexeditor.menu.file.export.title"_lang, DialogMode::Save, { }, [this](auto path) {
                         this->saveToFile(path, this->m_dataToSave);
                     });
                 }
-                if (ImGui::MenuItem("IPS32 Patch")) {
+                if (ImGui::MenuItem("hex.view.hexeditor.menu.file.export.ips32"_lang)) {
                     Patches patches = provider->getPatches();
                     if (!patches.contains(0x00454F45) && patches.contains(0x45454F46)) {
                         u8 value = 0;
@@ -418,7 +477,7 @@ namespace hex {
                     }
 
                     this->m_dataToSave = generateIPS32Patch(patches);
-                    View::openFileBrowser("Export File", imgui_addons::ImGuiFileBrowser::DialogMode::SAVE, "*.*", [this](auto path) {
+                    View::openFileBrowser("hex.view.hexeditor.menu.file.export.title"_lang, DialogMode::Save, { }, [this](auto path) {
                         this->saveToFile(path, this->m_dataToSave);
                     });
                 }
@@ -430,20 +489,20 @@ namespace hex {
 
             ImGui::Separator();
 
-            if (ImGui::MenuItem("Search", "CTRL + F")) {
+            if (ImGui::MenuItem("hex.view.hexeditor.menu.file.search"_lang, "CTRL + F")) {
                 this->getWindowOpenState() = true;
-                View::doLater([]{ ImGui::OpenPopup("Search"); });
+                View::doLater([]{ ImGui::OpenPopup("hex.view.hexeditor.menu.file.search"_lang); });
             }
 
-            if (ImGui::MenuItem("Goto", "CTRL + G")) {
+            if (ImGui::MenuItem("hex.view.hexeditor.menu.file.goto"_lang, "CTRL + G")) {
                 this->getWindowOpenState() = true;
-                View::doLater([]{ ImGui::OpenPopup("Goto"); });
+                View::doLater([]{ ImGui::OpenPopup("hex.view.hexeditor.menu.file.goto"_lang); });
             }
 
             ImGui::EndMenu();
         }
 
-        if (ImGui::BeginMenu("Edit")) {
+        if (ImGui::BeginMenu("hex.menu.edit"_lang)) {
             this->drawEditPopup();
             ImGui::EndMenu();
         }
@@ -457,13 +516,13 @@ namespace hex {
             saveAs();
             return true;
         } else if (mods == GLFW_MOD_CONTROL && key == GLFW_KEY_F) {
-            ImGui::OpenPopup("Search");
+            View::doLater([]{ ImGui::OpenPopup("hex.view.hexeditor.menu.file.search"_lang); });
             return true;
         } else if (mods == GLFW_MOD_CONTROL && key == GLFW_KEY_G) {
-            ImGui::OpenPopup("Goto");
+            View::doLater([]{ ImGui::OpenPopup("hex.view.hexeditor.menu.file.goto"_lang); });
             return true;
         } else if (mods == GLFW_MOD_CONTROL && key == GLFW_KEY_O) {
-            ImGui::OpenPopup("Open File");
+            View::doLater([]{ ImGui::OpenPopup("hex.view.hexeditor.open_file"_lang); });
             return true;
         } else if (mods == (GLFW_MOD_CONTROL | GLFW_MOD_ALT) && key == GLFW_KEY_C) {
             this->copyBytes();
@@ -484,17 +543,28 @@ namespace hex {
             delete provider;
 
         provider = new prv::FileProvider(path);
-        this->m_memoryEditor.ReadOnly = !provider->isWritable();
+        if (!provider->isWritable()) {
+            this->m_memoryEditor.ReadOnly = true;
+            View::showErrorPopup("hex.view.hexeditor.error.read_only"_lang);
+        } else {
+            this->m_memoryEditor.ReadOnly = false;
+        }
 
-        if (provider->isAvailable())
-            ProjectFile::setFilePath(path);
+        if (!provider->isAvailable()) {
+            View::showErrorPopup("hex.view.hexeditor.error.open"_lang);
+            delete provider;
+            provider = nullptr;
+
+            return;
+        }
+
+        ProjectFile::setFilePath(path);
 
         this->getWindowOpenState() = true;
 
-        View::postEvent(Events::FileLoaded);
+        View::postEvent(Events::FileLoaded, path);
         View::postEvent(Events::DataChanged);
         View::postEvent(Events::PatternChanged);
-        ProjectFile::markDirty();
     }
 
     bool ViewHexEditor::saveToFile(std::string path, const std::vector<u8>& data) {
@@ -886,42 +956,44 @@ R"(
             }
         };
 
-        if (ImGui::BeginPopup("Search")) {
-            ImGui::TextUnformatted("Search");
+        if (ImGui::BeginPopupContextVoid("hex.view.hexeditor.menu.file.search"_lang)) {
+            ImGui::TextUnformatted("hex.view.hexeditor.menu.file.search"_lang);
             if (ImGui::BeginTabBar("searchTabs")) {
-                char *currBuffer;
-                if (ImGui::BeginTabItem("String")) {
+                std::vector<char> *currBuffer = nullptr;
+                if (ImGui::BeginTabItem("hex.view.hexeditor.search.string"_lang)) {
                     this->m_searchFunction = findString;
                     this->m_lastSearchBuffer = &this->m_lastStringSearch;
-                    currBuffer = this->m_searchStringBuffer;
+                    currBuffer = &this->m_searchStringBuffer;
 
-                    ImGui::InputText("##nolabel", currBuffer, 0xFFFF, ImGuiInputTextFlags_CallbackCompletion,
+                    ImGui::InputText("##nolabel", currBuffer->data(), currBuffer->size(), ImGuiInputTextFlags_CallbackCompletion,
                                      InputCallback, this);
                     ImGui::EndTabItem();
                 }
 
-                if (ImGui::BeginTabItem("Hex")) {
+                if (ImGui::BeginTabItem("hex.view.hexeditor.search.hex"_lang)) {
                     this->m_searchFunction = findHex;
                     this->m_lastSearchBuffer = &this->m_lastHexSearch;
-                    currBuffer = this->m_searchHexBuffer;
+                    currBuffer = &this->m_searchHexBuffer;
 
-                    ImGui::InputText("##nolabel", currBuffer, 0xFFFF,
+                    ImGui::InputText("##nolabel", currBuffer->data(), currBuffer->size(),
                                      ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_CallbackCompletion,
                                      InputCallback, this);
                     ImGui::EndTabItem();
                 }
 
-                if (ImGui::Button("Find"))
-                    Find(currBuffer);
+                if (currBuffer != nullptr) {
+                    if (ImGui::Button("hex.view.hexeditor.search.find"_lang))
+                        Find(currBuffer->data());
 
-                if (this->m_lastSearchBuffer->size() > 0) {
-                    if ((ImGui::Button("Find Next")))
-                        FindNext();
+                    if (this->m_lastSearchBuffer->size() > 0) {
+                        if ((ImGui::Button("hex.view.hexeditor.search.find_next"_lang)))
+                            FindNext();
 
-                    ImGui::SameLine();
+                        ImGui::SameLine();
 
-                    if ((ImGui::Button("Find Prev")))
-                        FindPrevious();
+                        if ((ImGui::Button("hex.view.hexeditor.search.find_prev"_lang)))
+                            FindPrevious();
+                    }
                 }
 
                 ImGui::EndTabBar();
@@ -935,11 +1007,11 @@ R"(
     void ViewHexEditor::drawGotoPopup() {
         auto provider = SharedData::currentProvider;
 
-        if (ImGui::BeginPopup("Goto")) {
-            ImGui::TextUnformatted("Goto");
+        if (ImGui::BeginPopup("hex.view.hexeditor.menu.file.goto"_lang)) {
+            ImGui::TextUnformatted("hex.view.hexeditor.menu.file.goto"_lang);
             if (ImGui::BeginTabBar("gotoTabs")) {
                 s64 newOffset = 0;
-                if (ImGui::BeginTabItem("Begin")) {
+                if (ImGui::BeginTabItem("hex.view.hexeditor.goto.offset.begin"_lang)) {
                     ImGui::InputScalar("##nolabel", ImGuiDataType_U64, &this->m_gotoAddress, nullptr, nullptr, "%llx", ImGuiInputTextFlags_CharsHexadecimal);
 
                     if (this->m_gotoAddress >= provider->getActualSize())
@@ -949,7 +1021,7 @@ R"(
 
                     ImGui::EndTabItem();
                 }
-                if (ImGui::BeginTabItem("Current")) {
+                if (ImGui::BeginTabItem("hex.view.hexeditor.goto.offset.current"_lang)) {
                     ImGui::InputScalar("##nolabel", ImGuiDataType_S64, &this->m_gotoAddress, nullptr, nullptr, "%llx", ImGuiInputTextFlags_CharsHexadecimal);
 
                     if (this->m_memoryEditor.DataPreviewAddr == -1 || this->m_memoryEditor.DataPreviewAddrEnd == -1) {
@@ -970,7 +1042,7 @@ R"(
 
                     ImGui::EndTabItem();
                 }
-                if (ImGui::BeginTabItem("End")) {
+                if (ImGui::BeginTabItem("hex.view.hexeditor.goto.offset.end"_lang)) {
                     ImGui::InputScalar("##nolabel", ImGuiDataType_U64, &this->m_gotoAddress, nullptr, nullptr, "%llx", ImGuiInputTextFlags_CharsHexadecimal);
 
                     if (this->m_gotoAddress >= provider->getActualSize())
@@ -981,7 +1053,7 @@ R"(
                     ImGui::EndTabItem();
                 }
 
-                if (ImGui::Button("Goto")) {
+                if (ImGui::Button("hex.view.hexeditor.menu.file.goto"_lang)) {
                     provider->setCurrentPage(std::floor(newOffset / double(prv::Provider::PageSize)));
                     this->m_memoryEditor.GotoAddr = newOffset;
                     this->m_memoryEditor.DataPreviewAddr = newOffset;
@@ -996,50 +1068,52 @@ R"(
     }
 
     void ViewHexEditor::drawEditPopup() {
-        if (ImGui::BeginMenu("Copy as...", this->m_memoryEditor.DataPreviewAddr != -1 && this->m_memoryEditor.DataPreviewAddrEnd != -1)) {
-            if (ImGui::MenuItem("Bytes", "CTRL + ALT + C"))
+        if (ImGui::BeginMenu("hex.view.hexeditor.menu.edit.copy"_lang, this->m_memoryEditor.DataPreviewAddr != -1 && this->m_memoryEditor.DataPreviewAddrEnd != -1)) {
+            if (ImGui::MenuItem("hex.view.hexeditor.copy.bytes"_lang, "CTRL + ALT + C"))
                 this->copyBytes();
-            if (ImGui::MenuItem("Hex String", "CTRL + SHIFT + C"))
+            if (ImGui::MenuItem("hex.view.hexeditor.copy.hex"_lang, "CTRL + SHIFT + C"))
                 this->copyString();
 
             ImGui::Separator();
 
-            if (ImGui::MenuItem("C Array"))
+            if (ImGui::MenuItem("hex.view.hexeditor.copy.c"_lang))
                 this->copyLanguageArray(Language::C);
-            if (ImGui::MenuItem("C++ Array"))
+            if (ImGui::MenuItem("hex.view.hexeditor.copy.cpp"_lang))
                 this->copyLanguageArray(Language::Cpp);
-            if (ImGui::MenuItem("C# Array"))
+            if (ImGui::MenuItem("hex.view.hexeditor.copy.csharp"_lang))
                 this->copyLanguageArray(Language::CSharp);
-            if (ImGui::MenuItem("Rust Array"))
+            if (ImGui::MenuItem("hex.view.hexeditor.copy.rust"_lang))
                 this->copyLanguageArray(Language::Rust);
-            if (ImGui::MenuItem("Python Array"))
+            if (ImGui::MenuItem("hex.view.hexeditor.copy.python"_lang))
                 this->copyLanguageArray(Language::Python);
-            if (ImGui::MenuItem("Java Array"))
+            if (ImGui::MenuItem("hex.view.hexeditor.copy.java"_lang))
                 this->copyLanguageArray(Language::Java);
-            if (ImGui::MenuItem("JavaScript Array"))
+            if (ImGui::MenuItem("hex.view.hexeditor.copy.js"_lang))
                 this->copyLanguageArray(Language::JavaScript);
 
             ImGui::Separator();
 
-            if (ImGui::MenuItem("Editor View"))
+            if (ImGui::MenuItem("hex.view.hexeditor.copy.ascii"_lang))
                 this->copyHexView();
-            if (ImGui::MenuItem("HTML"))
+            if (ImGui::MenuItem("hex.view.hexeditor.copy.html"_lang))
                 this->copyHexViewHTML();
 
             ImGui::EndMenu();
         }
 
-        if (ImGui::MenuItem("Create bookmark", nullptr, false, this->m_memoryEditor.DataPreviewAddr != -1 && this->m_memoryEditor.DataPreviewAddrEnd != -1)) {
-            size_t start = std::min(this->m_memoryEditor.DataPreviewAddr, this->m_memoryEditor.DataPreviewAddrEnd);
-            size_t end = std::max(this->m_memoryEditor.DataPreviewAddr, this->m_memoryEditor.DataPreviewAddrEnd);
+        if (ImGui::MenuItem("hex.view.hexeditor.menu.edit.bookmark"_lang, nullptr, false, this->m_memoryEditor.DataPreviewAddr != -1 && this->m_memoryEditor.DataPreviewAddrEnd != -1)) {
+            auto base = SharedData::currentProvider->getBaseAddress();
+
+            size_t start = base + std::min(this->m_memoryEditor.DataPreviewAddr, this->m_memoryEditor.DataPreviewAddrEnd);
+            size_t end = base + std::max(this->m_memoryEditor.DataPreviewAddr, this->m_memoryEditor.DataPreviewAddrEnd);
 
             ImHexApi::Bookmarks::add(start, end - start + 1, { }, { });
         }
 
         auto provider = SharedData::currentProvider;
-        if (ImGui::MenuItem("Set base address", nullptr, false, provider != nullptr && provider->isReadable())) {
+        if (ImGui::MenuItem("hex.view.hexeditor.menu.edit.set_base"_lang, nullptr, false, provider != nullptr && provider->isReadable())) {
             std::memset(this->m_baseAddressBuffer, 0x00, sizeof(this->m_baseAddressBuffer));
-            View::doLater([]{ ImGui::OpenPopup("Set base address"); });
+            View::doLater([]{ ImGui::OpenPopup("hex.view.hexeditor.menu.edit.set_base"_lang); });
         }
     }
 

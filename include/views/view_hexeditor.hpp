@@ -2,9 +2,9 @@
 
 #include <hex/helpers/utils.hpp>
 #include <hex/views/view.hpp>
+#include "helpers/encoding_file.hpp"
 
 #include <imgui_memory_editor.h>
-#include <ImGuiFileBrowser.h>
 
 #include <list>
 #include <tuple>
@@ -25,6 +25,7 @@ namespace hex {
         ~ViewHexEditor() override;
 
         void drawContent() override;
+        void drawAlwaysVisible() override;
         void drawMenu() override;
         bool handleShortcut(int key, int mods) override;
 
@@ -35,8 +36,8 @@ namespace hex {
 
         std::map<u64, u32> m_highlightedBytes;
 
-        char m_searchStringBuffer[0xFFFF] = { 0 };
-        char m_searchHexBuffer[0xFFFF] = { 0 };
+        std::vector<char> m_searchStringBuffer;
+        std::vector<char> m_searchHexBuffer;
         SearchFunction m_searchFunction = nullptr;
         std::vector<std::pair<u64, u64>> *m_lastSearchBuffer;
 
@@ -52,6 +53,8 @@ namespace hex {
 
         std::string m_loaderScriptScriptPath;
         std::string m_loaderScriptFilePath;
+
+        hex::EncodingFile m_currEncodingFile;
 
         void drawSearchPopup();
         void drawGotoPopup();

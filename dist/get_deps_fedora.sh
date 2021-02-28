@@ -8,6 +8,7 @@ dnf install \
   glfw-devel \
   glm-devel \
   mesa-libGL-devel \
-  openssl-devel \
+  mbedtls-devel \
   python-devel \
-  freetype-devel
+  freetype-devel \
+  gtk3

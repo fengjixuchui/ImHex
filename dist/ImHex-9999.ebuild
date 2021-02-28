@@ -25,10 +25,10 @@ RDEPEND="${DEPEND}
 		${PYTHON_DEPS}
 		media-libs/glfw
 		sys-apps/file
-		dev-libs/openssl
+		dev-libs/mbedtls
 		dev-libs/capstone
-		sys-devel/llvm
 		dev-cpp/nlohmann_json
 		media-libs/glm
+		x11-libs/gtk+
 		"
 BDEPEND="${DEPEND}"
